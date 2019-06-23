@@ -12,7 +12,7 @@ build-code:
   services:
     - docker:dind
   script:
-    - docker build --cache-from "$CI_REGISTRY_IMAGE:builder" --stage builder -t "$CI_REGISTRY_IMAGE:builder" .
+    - docker build --cache-from "$CI_REGISTRY_IMAGE:builder" --target builder -t "$CI_REGISTRY_IMAGE:builder" .
     - docker push "$CI_REGISTRY_IMAGE:builder"
   only:
     - master

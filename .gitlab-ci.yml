@@ -3,6 +3,9 @@ before_script:
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
   - docker pull "$CI_REGISTRY_IMAGE" || true
   - docker pull "$CI_REGISTRY_IMAGE:builder" || true
+stages:
+  - build
+  - build-docker
 
 build-code:
   stage: build

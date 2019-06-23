@@ -1,0 +1,344 @@
+import aioschedule
+import asyncio
+from ruamel.yaml import YAML
+from os import listdir, path
+import os
+import re
+from datetime import datetime, timedelta
+import logging
+from . import ffmpeg
+from lxml.builder import E, ElementMaker
+from lxml import etree
+from email.utils import formatdate as formatemaildate
+from aiohttp import web
+import signal
+
+logging.basicConfig(level=os.environ.get('LOGLEVEL', 'WARNING').upper())
+log = logging.getLogger(__name__)
+
+CONFIG_FILE = os.environ.get('PYCAST_SHOWS', 'shows.yaml')
+shows = None
+recording_tasks = {}
+
+DATE_FORMAT = '%Y%m%d%H%M'
+FILE_NAME = '{name}_{start}_{end}_{part:03}'
+TMP_EXT = '.ts'
+OUT_EXT = os.environ.get('PYCAST_EXT', '.m4a')
+OUT_FMT = os.environ.get('PYCAST_FORMAT', 'aac')
+OUT_BITRATE = os.environ.get('PYCAST_BITRATE', '128k')
+RE_FILE_NAME = re.compile(r'(?P<name>.+)_(?P<start>\d{12})_(?P<end>\d{12})(_(?P<part>\d+))?')
+
+# TODO
+TEMP_DIR = os.environ.get('PYCAST_TEMP', '/tmp/recording')
+OUT_DIR = os.environ.get('PYCAST_OUT', '/tmp/recordings')
+HTTP_PORT = os.environ.get('PYCAST_PORT', 80)
+HTTP_BASE = os.environ.get('PYCAST_HTTPBASE', 'http://localhost/files/')
+
+sleeper: asyncio.Task = None
+wakeup = False
+parts_requested = []
+
+class File:
+
+    def __init__(self, filename):
+        self.filename = filename
+        self.basename = path.basename(self.filename)
+        match = RE_FILE_NAME.search(self.basename)
+        if not match:
+            raise ValueError()
+        self.name, start, end, self.part = match.group('name', 'start', 'end', 'part')
+        self.part = int(self.part)
+        self.start = datetime.strptime(start, DATE_FORMAT)
+        self.end = datetime.strptime(end, DATE_FORMAT)
+
+    @staticmethod
+    async def try_parse(filename):
+        try:
+            return File(filename)
+        except ValueError:
+            return None
+
+    async def populate_metadata(self):
+        self.duration = await ffmpeg.get_duration(self.filename)
+        stats = os.stat(self.filename)
+        self.size = stats.st_size
+        self.mtime = datetime.fromtimestamp(stats.st_mtime)
+
+    def is_part(self, other):
+        return other.name == self.name and other.start >= self.start and other.end <= self.end
+
+def get_filename(show_name, start, end, part, ext):
+    start_f = datetime.strftime(start, DATE_FORMAT)
+    end_f = datetime.strftime(end, DATE_FORMAT)
+    return FILE_NAME.format(name=show_name, start=start_f, end=end_f, part=part) + ext
+        
+async def run_forever():
+    global sleeper
+    global wakeup
+    idle_seconds = 0
+    pending = set()
+    while True:
+        pending.add(asyncio.create_task(aioschedule.run_pending()))
+        if aioschedule.jobs:
+            idle_seconds = max(aioschedule.idle_seconds(), 0)
+        else:
+            idle_seconds = 3600 # arbitrary
+        sleeper = asyncio.create_task(asyncio.sleep(min(idle_seconds, 3600)))
+        pending.add(sleeper)
+        try:
+            log.debug(f'Time until next task: {idle_seconds}')
+            wakeup = False
+            while not sleeper.done():
+                _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            if not wakeup:
+                raise
+        except Exception as e:
+            log.error('Failure while running tasks. Exception follows')
+            log.error(e)
+        sleeper = None
+
+async def wake_scheduler():
+    global wakeup
+    if sleeper:
+        wakeup = True
+        sleeper.cancel()
+
+def get_show_by_name(name):
+    for s in shows['shows']:
+        if s['name'] == name:
+            return s
+
+async def read_show_files(files, name=None, condition=lambda _: True):
+    result = []
+    for f in files:
+        file = await File.try_parse(f)
+        if file and (not name or file.name == name) and condition(file):
+            await file.populate_metadata()
+            result.append(file)
+    result.sort(key=lambda f: f.part)
+    return result
+
+async def get_show_files(dir_path, name=None, condition=lambda _: True):
+    return await read_show_files([path.join(dir_path, p) for p in listdir(dir_path)], name, condition)
+
+async def start_recording(show):
+    show_name = show['name']
+
+    task = recording_tasks.get(show_name, None)
+    if task:
+        log.debug('Already recording ' + show_name)
+        return
+
+    schedule = show['schedule']
+    log.debug('Start recording ' + show_name)
+
+    existing_files = await get_show_files(TEMP_DIR, show_name)
+    if existing_files:
+        part_num = existing_files[-1].part + 1
+    else:
+        part_num = 1
+
+    start_time = datetime.strptime(schedule['start'], '%H:%M')
+    end_time = datetime.strptime(schedule['end'], '%H:%M')
+
+    start_date = datetime.now().replace(hour=start_time.hour, minute=start_time.minute)
+    end_date = start_date.replace(hour=end_time.hour, minute=end_time.minute)
+    if end_time.hour < start_time.hour:
+        end_date = end_date + timedelta(days=1)
+
+    file_name = get_filename(show_name, start_date, end_date, part_num, TMP_EXT)
+
+    proc_task = asyncio.create_task(ffmpeg.convert(show['stream'], path.join(TEMP_DIR, file_name), OUT_FMT, OUT_BITRATE))
+    recording_tasks[show['name']] = proc_task
+    try:
+        await proc_task
+    except:
+        # Can be expected on failure, or end of recording
+        pass
+    await end_recording(show)
+    await finalise_recordings()
+
+async def end_recording(show):
+    name = show['name']
+    task = recording_tasks.get(name, None)
+    if task:
+        task.cancel()
+        del recording_tasks[name]
+
+async def finalise_recordings(skip_long_running=False):
+    
+    try:
+        long_running_tasks = []
+        lock = asyncio.Lock()
+        async with lock:
+            tmp_files = await get_show_files(TEMP_DIR)
+            out_files = [path.join(OUT_DIR, p) for p in listdir(OUT_DIR)]
+            
+            live_part_shows = []
+            for show_name in parts_requested:
+                show = get_show_by_name(show_name)
+                if show and show.get('live_parts', False):
+                    live_part_shows.append(show_name)
+            parts_requested.clear()
+
+            # Group files relating to the same recording
+            groups = {}
+            for f in tmp_files:
+                k = f'{f.name}_{f.start}_{f.end}'
+
+                group_files = groups.get(k, [])
+                group_files.append(f)
+                groups[k] = group_files
+                
+            for k, v in groups.items():
+                log.debug(f'Processing file group {k}')
+
+                now = datetime.now()
+
+                v.sort(key=lambda f: f.part)
+                first_tmp = v[0]
+                total_duration = sum(f.duration for f in v)
+
+                # Resume the recording if it should be running
+                if (not skip_long_running) and now > first_tmp.start and now < first_tmp.end and not recording_tasks.get(first_tmp.name, None):
+                    # Use scheduler, but run once
+                    show = get_show_by_name(first_tmp.name)
+                    if show:
+                        # This is long running, so we'll await this outside the lock
+                        long_running_tasks.append(asyncio.create_task(start_recording(show)))
+
+                # Create parts if ended or requested
+                if (now > first_tmp.end) or (first_tmp.name in live_part_shows):
+
+                    # Locate parts created so far
+                    last_part_num = 0
+                    parts_duration = 0
+                    for pf in await read_show_files(out_files, condition=lambda f: first_tmp.is_part(f)):
+                        if pf.part > last_part_num:
+                            last_part_num = pf.part
+                        parts_duration += pf.duration
+
+                    # Create a new part - diff between tmp duration and total
+                    part_length = total_duration - parts_duration
+                    if part_length > 1: # seconds - 1 to account for rounding etc
+                        part_num = last_part_num + 1
+                        part_name = get_filename(first_tmp.name, first_tmp.start, first_tmp.end, part_num, OUT_EXT)
+                        part_path = path.join(OUT_DIR, part_name)
+                        await ffmpeg.create_part([f.filename for f in v], part_path, parts_duration, total_duration)
+                    
+                    if now > first_tmp.end:
+                        for f in v:
+                            os.remove(f.filename)
+
+        if long_running_tasks:
+            await asyncio.wait(long_running_tasks)
+
+    except Exception as e:
+        log.error('Failure during finalise_recordings. Exception follows')
+        log.error(e)
+                
+def create_job(day, at):
+    job = aioschedule.every()
+    job.start_day = day
+    job.unit = 'weeks'
+    job.at(at)
+    return job
+
+async def get_show_as_podcast(name):
+    files = await get_show_files(OUT_DIR, name)
+
+    IT_NS = 'http://www.itunes.com/dtds/podcast-1.0.dtd'
+    NS_MAP = {'itunes': IT_NS}
+
+    it = ElementMaker(namespace=IT_NS, nsmap=NS_MAP)
+    root = ElementMaker(namespace=None, nsmap=NS_MAP)
+
+    def file_to_item(f):
+        return E.item(
+            E.title(f'{name} - {datetime.strftime(f.start, "%Y-%m-%d")} (Part {f.part})'),
+            it.author(name),
+            it.summary(''),
+            E.enclosure(
+                E.url(HTTP_BASE + f.basename),
+                E.length(str(f.size)),
+                E.type('audio/mp4')
+            ),
+            E.guid(f.basename),
+            E.pubDate(formatemaildate(f.mtime.timestamp())),
+            it.duration(str(timedelta(seconds=f.duration)))
+        )
+
+    doc = (
+        root.rss(
+            E.channel(
+                E.title(name),
+                E.description(''),
+                E.link(''),
+                it.author(name)
+            ),
+            E.items(*[file_to_item(f) for f in files]),
+            version='2.0'
+        )
+    )
+
+    return etree.tostring(doc, pretty_print=True)
+
+async def get_feed_http(request):
+    show_name = request.match_info.get('name', None)
+    if show_name:
+        parts_requested.append(show_name)
+        await finalise_recordings(skip_long_running=True)
+        rss = await get_show_as_podcast(show_name)
+        return web.Response(body=rss, content_type='application/rss+xml')
+    return web.Response(status=404)
+
+async def run():
+    log.debug('Debug logging enabled')
+
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    global shows
+    with open(CONFIG_FILE, 'r') as f:
+        shows = YAML().load(f)
+
+    for show in shows['shows']:
+        # Make the show name file safe
+        show['name'] = ''.join([c if c.isalpha() or c.isdigit() else '-' for c in show['name']])
+        show_sched = show['schedule']
+        for day in show_sched['every']:
+            create_job(day, show_sched['start']).do(start_recording, show)
+            create_job(day, show_sched['end']).do(end_recording, show)
+
+    # Clean-up task is oneoff, but may result in recording being resumed
+    cleanup_task = asyncio.create_task(finalise_recordings())
+    scheduler_task = asyncio.create_task(run_forever())
+
+    # HTTP server
+    server = web.Application()
+    server.add_routes([web.get('/shows/{name}', get_feed_http)])
+    server.router.add_static('/files', OUT_DIR)
+    runner = web.AppRunner(server)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
+    site_task = asyncio.create_task(site.start())
+    
+    await asyncio.wait([cleanup_task, scheduler_task, site_task])
+
+def main():
+    try:
+        try:
+            os.setpgrp()
+        except:
+            pass # Not allowed e.g. in Docker
+        asyncio.run(run())
+    finally:
+        try:
+            # Ensure any child processes are also terminated
+            os.killpg(0, signal.SIGINT)
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,15 @@
+shows:
+  - name: example
+    stream: https://ais-nzme.streamguys1.com/nz_009/playlist.m3u8
+    live_parts: true
+    schedule:
+      every:
+        - monday
+        - tuesday
+        - wednesday
+        - thursday
+        - friday
+        - saturday
+        - sunday
+      start: 12:34
+      end: 13:34

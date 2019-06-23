@@ -18,6 +18,8 @@ ENV PYCAST_OUT=/config/www
 ENV PYCAST_PORT="80"
 ENV PYCAST_HTTPBASE="http://localhost/files/"
 
+EXPOSE 80
+
 COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
 RUN pip install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
 

@@ -23,4 +23,8 @@ EXPOSE 80
 COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
 RUN pip install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
 
+RUN apt-get update && apt-get install -y \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 CMD [ "python", "-m", "pycast_recorder" ]

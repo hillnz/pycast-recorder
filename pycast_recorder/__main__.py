@@ -260,6 +260,7 @@ async def get_show_as_podcast(name):
             it.author(name),
             it.summary(''),
             E.enclosure(
+                '',
                 url=(HTTP_BASE + f.basename),
                 length=str(f.size),
                 type='audio/mp4'

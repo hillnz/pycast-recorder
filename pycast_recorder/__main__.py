@@ -276,9 +276,9 @@ async def get_show_as_podcast(name):
                 E.title(name),
                 E.description(''),
                 E.link(''),
-                it.author(name)
+                it.author(name),
+                *[file_to_item(f) for f in files]
             ),
-            E.items(*[file_to_item(f) for f in files]),
             version='2.0'
         )
     )

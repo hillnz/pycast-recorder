@@ -22,7 +22,7 @@ build-image:
   services:
     - docker:dind
   script:
-    - docker build --cache-from "$CI_REGISTRY_IMAGE" --pull --cache-from "$CI_REGISTRY_IMAGE" --pull -t "$CI_REGISTRY_IMAGE" .
+    - docker build --cache-from "$CI_REGISTRY_IMAGE:builder" --pull --cache-from "$CI_REGISTRY_IMAGE" --pull -t "$CI_REGISTRY_IMAGE" .
     - docker push "$CI_REGISTRY_IMAGE"
   only:
     - master
@@ -32,7 +32,7 @@ build-unstable:
   services:
     - docker:dind
   script:
-    - docker build --cache-from "$CI_REGISTRY_IMAGE" --cache-from "$CI_REGISTRY_IMAGE" --pull -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    - docker build --cache-from "$CI_REGISTRY_IMAGE:builder" --cache-from "$CI_REGISTRY_IMAGE" --pull -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
   except:
     - master

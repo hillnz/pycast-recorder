@@ -1,4 +1,4 @@
-FROM python:3.7 AS builder
+FROM python:3.8-rc-buster AS builder
 
 RUN pip install poetry
 
@@ -7,7 +7,7 @@ COPY . .
 
 RUN poetry build -f wheel
 
-FROM python:3.7
+FROM python:3.8-rc-buster
 
 ENV PYCAST_SHOWS=/config/shows.yaml
 ENV PYCAST_EXT=".m4a"
@@ -23,8 +23,6 @@ EXPOSE 80
 COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
 RUN pip install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
 
-RUN apt-get update && apt-get install -y \
-        ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ffmpeg
 
 CMD [ "python", "-m", "pycast_recorder" ]

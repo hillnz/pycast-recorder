@@ -20,6 +20,7 @@ CONFIG_FILE = os.environ.get('PYCAST_SHOWS', 'shows.yaml')
 shows = None
 recording_tasks = {}
 
+RECORDING_WATCHDOG_TIME = 10
 DATE_FORMAT = '%Y%m%d%H%M'
 FILE_NAME = '{name}_{start}_{end}_{part:03}'
 TMP_EXT = '.ts'
@@ -67,6 +68,12 @@ class File:
     def is_part(self, other):
         return other.name == self.name and other.start >= self.start and other.end <= self.end
 
+class RecordingTask:
+    proc_task: asyncio.Task = None
+    output_file = ''
+    last_output_file_size = 0
+    last_output_file_time = datetime.now()
+
 def get_filename(show_name, start, end, part, ext):
     start_f = datetime.strftime(start, DATE_FORMAT)
     end_f = datetime.strftime(end, DATE_FORMAT)
@@ -79,14 +86,14 @@ async def run_forever():
     pending = set()
     while True:
         pending.add(asyncio.create_task(aioschedule.run_pending()))
+        default_wait_time = RECORDING_WATCHDOG_TIME if recording_tasks else 3600
         if aioschedule.jobs:
             idle_seconds = max(aioschedule.idle_seconds(), 0)
         else:
-            idle_seconds = 3600 # arbitrary
-        sleeper = asyncio.create_task(asyncio.sleep(min(idle_seconds, 3600)))
+            idle_seconds = default_wait_time
+        sleeper = asyncio.create_task(asyncio.sleep(min(idle_seconds, default_wait_time)))
         pending.add(sleeper)
         try:
-            log.debug(f'Time until next task: {idle_seconds}')
             wakeup = False
             while not sleeper.done():
                 _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -122,7 +129,20 @@ async def read_show_files(files, name=None, condition=lambda _: True):
 async def get_show_files(dir_path, name=None, condition=lambda _: True):
     return await read_show_files([path.join(dir_path, p) for p in listdir(dir_path)], name, condition)
 
+async def monitor_recordings(name):
+    for name, task in recording_tasks.items():
+        if (datetime.now() - task.last_output_file_time).seconds >= RECORDING_WATCHDOG_TIME:
+            task.last_output_file_time = datetime.now()
+
+            new_size = os.stat(task.output_file).st_size
+            if new_size == task.last_output_file_size:
+                log.debug(f'No change in filesize for {task.output_file}. Current recording process will be killed')
+                end_recording(name)
+            else:
+                task.last_output_file_size = new_size
+
 async def start_recording(show):
+    log.debug(f'start_recording({show})')
     show_name = show['name']
 
     task = recording_tasks.get(show_name, None)
@@ -147,10 +167,14 @@ async def start_recording(show):
     if end_time.hour < start_time.hour:
         end_date = end_date + timedelta(days=1)
 
-    file_name = get_filename(show_name, start_date, end_date, part_num, TMP_EXT)
+    file_name = path.join(TEMP_DIR, get_filename(show_name, start_date, end_date, part_num, TMP_EXT))
 
-    proc_task = asyncio.create_task(ffmpeg.convert(show['stream'], path.join(TEMP_DIR, file_name), OUT_FMT, OUT_BITRATE))
-    recording_tasks[show['name']] = proc_task
+    proc_task = asyncio.create_task(ffmpeg.convert(show['stream'], file_name, OUT_FMT, OUT_BITRATE))
+    recording_task = RecordingTask()
+    recording_task.proc_task = proc_task
+    recording_task.output_file = file_name
+    recording_tasks[show['name']] = recording_task
+    wake_scheduler()
     try:
         await proc_task
     except:
@@ -160,13 +184,15 @@ async def start_recording(show):
     await finalise_recordings()
 
 async def end_recording(show):
+    log.debug(f'end_recording({show})')
     name = show['name']
     task = recording_tasks.get(name, None)
     if task:
-        task.cancel()
+        task.proc_task.cancel()
         del recording_tasks[name]
 
 async def finalise_recordings(skip_long_running=False):
+    log.debug(f'finalise_recordings({skip_long_running}')
     
     try:
         long_running_tasks = []

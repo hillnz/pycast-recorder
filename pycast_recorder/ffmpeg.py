@@ -34,7 +34,7 @@ async def convert(source, dest, format, bitrate):
         log.debug(f'convert {source} to {dest} ({format}, {bitrate})')
         proc = await asyncio.create_subprocess_exec(
             'ffmpeg',
-            '-i', source, '-acodec', format, '-b:a', bitrate, '-loglevel', 'error', '-nostats', '-y', dest
+            '-i', source, '-acodec', format, '-b:a', bitrate, '-loglevel', 'error', '-nostats', '-flush_packets', '1', '-y', dest
         )
         await proc.communicate()
         log.debug('convert finished')

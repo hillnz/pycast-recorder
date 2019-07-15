@@ -98,7 +98,7 @@ async def run_forever():
             while not sleeper.done():
                 _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-            monitor_recordings()                
+            await monitor_recordings()                
         except asyncio.CancelledError:
             if not wakeup:
                 raise

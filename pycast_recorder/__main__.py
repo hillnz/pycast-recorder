@@ -131,7 +131,7 @@ async def read_show_files(files, name=None, condition=lambda _: True):
 async def get_show_files(dir_path, name=None, condition=lambda _: True):
     return await read_show_files([path.join(dir_path, p) for p in listdir(dir_path)], name, condition)
 
-async def monitor_recordings(name):
+async def monitor_recordings():
     for name, task in recording_tasks.items():
         if (datetime.now() - task.last_output_file_time).seconds >= RECORDING_WATCHDOG_TIME:
             task.last_output_file_time = datetime.now()

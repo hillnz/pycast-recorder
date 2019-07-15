@@ -97,6 +97,8 @@ async def run_forever():
             wakeup = False
             while not sleeper.done():
                 _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+            monitor_recordings()                
         except asyncio.CancelledError:
             if not wakeup:
                 raise
@@ -105,7 +107,7 @@ async def run_forever():
             log.error(e)
         sleeper = None
 
-async def wake_scheduler():
+def wake_scheduler():
     global wakeup
     if sleeper:
         wakeup = True

@@ -139,7 +139,7 @@ async def monitor_recordings():
             new_size = os.stat(task.output_file).st_size
             if new_size == task.last_output_file_size:
                 log.debug(f'No change in filesize for {task.output_file}. Current recording process will be killed')
-                end_recording(name)
+                await end_recording(name)
             else:
                 task.last_output_file_size = new_size
 

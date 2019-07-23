@@ -12,6 +12,7 @@ from lxml import etree
 from email.utils import formatdate as formatemaildate
 from aiohttp import web
 import signal
+from uuid import uuid4
 
 logging.basicConfig(level=os.environ.get('LOGLEVEL', 'WARNING').upper())
 log = logging.getLogger(__name__)
@@ -194,11 +195,13 @@ async def end_recording(show):
         del recording_tasks[name]
 
 async def finalise_recordings(skip_long_running=False):
-    log.debug(f'finalise_recordings({skip_long_running}')
+    req_id = str(uuid4())
+    log.debug(f'{req_id} finalise_recordings({skip_long_running})')
     
     try:
         long_running_tasks = []
         lock = asyncio.Lock()
+        log.debug(req_id + ' await lock')
         async with lock:
             tmp_files = await get_show_files(TEMP_DIR)
             out_files = [path.join(OUT_DIR, p) for p in listdir(OUT_DIR)]
@@ -220,7 +223,7 @@ async def finalise_recordings(skip_long_running=False):
                 groups[k] = group_files
                 
             for k, v in groups.items():
-                log.debug(f'Processing file group {k}')
+                log.debug(req_id + f'Processing file group {k}')
 
                 now = datetime.now()
 
@@ -253,8 +256,10 @@ async def finalise_recordings(skip_long_running=False):
                         part_num = last_part_num + 1
                         part_name = get_filename(first_tmp.name, first_tmp.start, first_tmp.end, part_num, OUT_EXT)
                         part_path = path.join(OUT_DIR, part_name)
+                        print(req_id + ' create part')
                         await ffmpeg.create_part([f.filename for f in v], part_path, parts_duration, total_duration)
-                    
+                        print(req_id + ' end create part')
+
                     if now > first_tmp.end:
                         for f in v:
                             os.remove(f.filename)
@@ -314,6 +319,7 @@ async def get_show_as_podcast(name):
     return etree.tostring(doc, pretty_print=True)
 
 async def get_feed_http(request):
+    log.debug(f'get_feed_http')
     show_name = request.match_info.get('name', None)
     if show_name:
         parts_requested.append(show_name)

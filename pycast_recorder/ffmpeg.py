@@ -7,13 +7,18 @@ def _fmt_float(num):
     return '{:.3f}'.format(num)
 
 async def get_duration(filepath):
-    proc = await asyncio.create_subprocess_exec(
-        'ffprobe', 
-        '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
-        filepath,
-        stdout=asyncio.subprocess.PIPE)
-    stdout, _ = await proc.communicate()
-    return float(stdout.decode())
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffprobe', 
+            '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1',
+            filepath,
+            stdout=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        return float(stdout.decode())
+    except Exception as e:
+        log.debug('get_duration exception')
+        log.debug(e)
+        return 0
 
 async def create_part(source_parts: list, dest, start, end):
     log.debug(f'create_part from {source_parts} to {dest} starting at {start} to {end}')

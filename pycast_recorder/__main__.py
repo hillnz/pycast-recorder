@@ -203,6 +203,7 @@ async def finalise_recordings(skip_long_running=False):
         lock = asyncio.Lock()
         log.debug(req_id + ' await lock')
         async with lock:
+            log.debug(req_id + ' got lock')
             tmp_files = await get_show_files(TEMP_DIR)
             out_files = [path.join(OUT_DIR, p) for p in listdir(OUT_DIR)]
             

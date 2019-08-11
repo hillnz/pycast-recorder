@@ -61,6 +61,7 @@ class File:
             return None
 
     async def populate_metadata(self):
+        log.debug(f'populate_metadata({self.filename})')
         self.duration = await ffmpeg.get_duration(self.filename)
         stats = os.stat(self.filename)
         self.size = stats.st_size
@@ -224,7 +225,7 @@ async def finalise_recordings(skip_long_running=False):
                 groups[k] = group_files
                 
             for k, v in groups.items():
-                log.debug(req_id + f'Processing file group {k}')
+                log.debug(f'{req_id} Processing file group {k}')
 
                 now = datetime.now()
 

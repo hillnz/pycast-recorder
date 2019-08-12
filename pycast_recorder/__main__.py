@@ -69,7 +69,7 @@ class File:
                 cached = json.load(f)
                 self.duration = cached['duration']
                 self.size = cached['size']
-                self.mtime = cached['mtime']
+                self.mtime = datetime.fromtimestamp(cached['mtime'])
         else:
             self.duration = await ffmpeg.get_duration(self.filename)
             stats = os.stat(self.filename)
@@ -80,7 +80,7 @@ class File:
                     json.dump({
                         'duration': self.duration,
                         'size': self.size,
-                        'mtime': self.mtime
+                        'mtime': stats.st_mtime
                     }, f)
 
     def is_part(self, other):

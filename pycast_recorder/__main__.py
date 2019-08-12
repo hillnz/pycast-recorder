@@ -46,7 +46,7 @@ class File:
     def __init__(self, filename):
         self.filename = filename
         self.basename = path.basename(self.filename)
-        match = RE_FILE_NAME.search(self.basename)
+        match = RE_FILE_NAME.search(self.basename) and not self.filename.endswith('metadata')
         if not match:
             raise ValueError()
         self.name, start, end, self.part = match.group('name', 'start', 'end', 'part')

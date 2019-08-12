@@ -15,7 +15,7 @@ async def get_duration(filepath):
             stdout=asyncio.subprocess.PIPE)
         stdout, _ = await proc.communicate()
         result = stdout.decode()
-        log.debug(f'ffprobe: {result}')
+        # log.debug(f'ffprobe: {result}')
         return float(result)
     except Exception as e:
         log.debug('get_duration exception')

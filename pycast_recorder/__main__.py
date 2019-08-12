@@ -13,6 +13,7 @@ from email.utils import formatdate as formatemaildate
 from aiohttp import web
 import signal
 from uuid import uuid4
+import json
 
 logging.basicConfig(level=os.environ.get('LOGLEVEL', 'WARNING').upper())
 log = logging.getLogger(__name__)
@@ -60,12 +61,27 @@ class File:
         except ValueError:
             return None
 
-    async def populate_metadata(self):
-        log.debug(f'populate_metadata({self.filename})')
-        self.duration = await ffmpeg.get_duration(self.filename)
-        stats = os.stat(self.filename)
-        self.size = stats.st_size
-        self.mtime = datetime.fromtimestamp(stats.st_mtime)
+    async def populate_metadata(self, cache=True):
+        # log.debug(f'populate_metadata({self.filename})')
+        CACHE_FILE = self.filename + '.metadata'
+        if path.isfile(CACHE_FILE) and cache:
+            with open(CACHE_FILE, 'r') as f:
+                cached = json.load(f)
+                self.duration = cached['duration']
+                self.size = cached['size']
+                self.mtime = cached['mtime']
+        else:
+            self.duration = await ffmpeg.get_duration(self.filename)
+            stats = os.stat(self.filename)
+            self.size = stats.st_size
+            self.mtime = datetime.fromtimestamp(stats.st_mtime)
+            if cache:
+                with open(CACHE_FILE, 'w') as f:
+                    json.dump({
+                        'duration': self.duration,
+                        'size': self.size,
+                        'mtime': self.mtime
+                    }, f)
 
     def is_part(self, other):
         return other.name == self.name and other.start >= self.start and other.end <= self.end
@@ -120,18 +136,18 @@ def get_show_by_name(name):
         if s['name'] == name:
             return s
 
-async def read_show_files(files, name=None, condition=lambda _: True):
+async def read_show_files(files, name=None, condition=lambda _: True, cache_metadata=True):
     result = []
     for f in files:
         file = await File.try_parse(f)
         if file and (not name or file.name == name) and condition(file):
-            await file.populate_metadata()
+            await file.populate_metadata(cache_metadata)
             result.append(file)
     result.sort(key=lambda f: f.part)
     return result
 
-async def get_show_files(dir_path, name=None, condition=lambda _: True):
-    return await read_show_files([path.join(dir_path, p) for p in listdir(dir_path)], name, condition)
+async def get_show_files(dir_path, name=None, condition=lambda _: True, cache_metadata=True):
+    return await read_show_files([path.join(dir_path, p) for p in listdir(dir_path)], name, condition, cache_metadata)
 
 async def monitor_recordings():
     for name, task in recording_tasks.items():
@@ -157,7 +173,7 @@ async def start_recording(show):
     schedule = show['schedule']
     log.debug('Start recording ' + show_name)
 
-    existing_files = await get_show_files(TEMP_DIR, show_name)
+    existing_files = await get_show_files(TEMP_DIR, show_name, cache_metadata=False)
     if existing_files:
         part_num = existing_files[-1].part + 1
     else:
@@ -205,7 +221,7 @@ async def finalise_recordings(skip_long_running=False):
         log.debug(req_id + ' await lock')
         async with lock:
             log.debug(req_id + ' got lock')
-            tmp_files = await get_show_files(TEMP_DIR)
+            tmp_files = await get_show_files(TEMP_DIR, cache_metadata=False)
             out_files = [path.join(OUT_DIR, p) for p in listdir(OUT_DIR)]
             
             live_part_shows = []
@@ -281,7 +297,7 @@ def create_job(day, at):
     return job
 
 async def get_show_as_podcast(name):
-    files = await get_show_files(OUT_DIR, name)
+    files = await get_show_files(OUT_DIR, name, cache_metadata=True)
 
     IT_NS = 'http://www.itunes.com/dtds/podcast-1.0.dtd'
     NS_MAP = {'itunes': IT_NS}

@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime, timedelta
 import logging
-from . import ffmpeg
+from . import ffmpeg, m3u8
 from lxml.builder import E, ElementMaker
 from lxml import etree
 from email.utils import formatdate as formatemaildate
@@ -14,6 +14,11 @@ from aiohttp import web
 import signal
 from uuid import uuid4
 import json
+import re
+from collections import deque
+from time import time
+from typing import List, Tuple, Dict
+import traceback
 
 logging.basicConfig(level=os.environ.get('LOGLEVEL', 'WARNING').upper())
 log = logging.getLogger(__name__)
@@ -120,9 +125,9 @@ async def run_forever():
         except asyncio.CancelledError:
             if not wakeup:
                 raise
-        except Exception as e:
+        except:
             log.error('Failure while running tasks. Exception follows')
-            log.error(e)
+            log.error(traceback.format_exc())
         sleeper = None
 
 def wake_scheduler():
@@ -154,12 +159,105 @@ async def monitor_recordings():
         if (datetime.now() - task.last_output_file_time).seconds >= RECORDING_WATCHDOG_TIME:
             task.last_output_file_time = datetime.now()
 
-            new_size = os.stat(task.output_file).st_size
-            if new_size == task.last_output_file_size:
-                log.debug(f'No change in filesize for {task.output_file}. Current recording process will be killed')
-                await end_recording(name)
-            else:
-                task.last_output_file_size = new_size
+            try:
+                new_size = os.stat(task.output_file).st_size
+                if new_size == task.last_output_file_size:
+                    log.info(f'No change in filesize for {task.output_file}. Current recording process will be killed')
+                    await end_recording(name)
+                else:
+                    task.last_output_file_size = new_size
+            except FileNotFoundError:
+                log.warning(f'File {task.output_file} has not appeared yet')
+
+async def record(url, file_name, format, bitrate):
+    with open(file_name + '.metadata', 'w') as metadata_f:
+
+        # Small buffer before writing to file to catch out of order items
+        BUFFER_LENGTH = 2
+        recent_metadata = []
+
+        # Recent metadata
+        info_stream = deque(maxlen=100)
+        # ffmpeg chunks awaiting tagging
+        metadata_queue = deque(maxlen=10)
+
+        media_start_time = time()
+
+        def write_metadata(metadata_item):
+            chunk_time, chunk_info = metadata_item
+            metadata_f.write(f'{chunk_time} {json.dumps(chunk_info)}\n')
+            metadata_f.flush()
+
+        def match_metadata():
+            nonlocal recent_metadata
+            if len(metadata_queue) > 0:
+                last_item = metadata_queue[-1]
+                while True:
+                    this_item = metadata_queue[0]
+                    chunk_time, chunk_url = this_item
+                    info = None
+                    try:
+                        info = next((x for x in info_stream if x.get('file', '') == chunk_url))
+                        del info['file']
+                    except StopIteration:
+                        pass
+                    if info:
+                        # Now processed so remove from list
+                        metadata_queue.popleft()
+                        if len(recent_metadata) == 0 or (len(recent_metadata) > 0 and recent_metadata[-1][1] != info):
+                            recent_metadata.append((chunk_time, info))
+                            recent_metadata.sort()
+                            if len(recent_metadata) > BUFFER_LENGTH:
+                                log.debug('Write metadata')
+                                write_metadata(recent_metadata[0])
+                                recent_metadata = recent_metadata[1:]
+                    else:
+                        # No metadata found, try next chunk
+                        metadata_queue.rotate()
+                    if this_item == last_item:
+                        break
+
+        async def read_metadata():
+            m3u8_file = m3u8.M3u8(url)
+            async for info in m3u8_file.read_song_info():
+                log.debug(f'Got info for {info["file"]}')
+                info_stream.append(info)
+                match_metadata()
+        
+        metadata_task = asyncio.create_task(read_metadata())
+
+        try:
+            re_file = re.compile(r"Opening '(.+)' for reading")
+            re_time = re.compile(r'time=(\d+):(\d+):(\d+)(?:\.(\d+))?')
+            async for err_line in ffmpeg.convert_with_stderr(url, file_name, OUT_FMT, OUT_BITRATE):
+                file_match = re_file.search(err_line)
+                if file_match:
+                    chunk_url = file_match[1]
+                    log.debug(f'Need metadata for {chunk_url}')
+                    metadata_queue.append((time() - media_start_time, chunk_url))
+                time_match = re_time.search(err_line)
+                if time_match:
+                    # Re-sync the start time based on current media time
+                    h, m, s, ms = tuple(int(n) for n in time_match.groups('0'))
+                    real_media_time = timedelta(hours=h, minutes=m, seconds=s, milliseconds=ms).total_seconds()
+                    log.debug(f'Media time is {real_media_time}')
+                    media_start_time = time() - real_media_time
+                match_metadata()
+        except asyncio.CancelledError:
+            pass
+        except:
+            log.warning('Exception during recording')
+            log.warning(traceback.format_exc())
+            raise
+        finally:
+            metadata_task.cancel()
+            # Mop up final metadata items
+            for metadata_item in recent_metadata:
+                write_metadata(metadata_item)
+            try:
+                await metadata_task
+            except asyncio.CancelledError:
+                pass
 
 async def start_recording(show):
     log.debug(f'start_recording({show})')
@@ -167,11 +265,11 @@ async def start_recording(show):
 
     task = recording_tasks.get(show_name, None)
     if task:
-        log.debug('Already recording ' + show_name)
+        log.info('Already recording ' + show_name)
         return
 
     schedule = show['schedule']
-    log.debug('Start recording ' + show_name)
+    log.info('Start recording ' + show_name)
 
     existing_files = await get_show_files(TEMP_DIR, show_name, cache_metadata=False)
     if existing_files:
@@ -189,7 +287,7 @@ async def start_recording(show):
 
     file_name = path.join(TEMP_DIR, get_filename(show_name, start_date, end_date, part_num, TMP_EXT))
 
-    proc_task = asyncio.create_task(ffmpeg.convert(show['stream'], file_name, OUT_FMT, OUT_BITRATE))
+    proc_task = asyncio.create_task(record(show['stream'], file_name, OUT_FMT, OUT_BITRATE))
     recording_task = RecordingTask()
     recording_task.proc_task = proc_task
     recording_task.output_file = file_name
@@ -199,7 +297,8 @@ async def start_recording(show):
         await proc_task
     except:
         # Can be expected on failure, or end of recording
-        pass
+        log.debug('proc_task exception')
+        log.debug(traceback.format_exc())
     await end_recording(show)
     await finalise_recordings()
 
@@ -271,11 +370,41 @@ async def finalise_recordings(skip_long_running=False):
                     # Create a new part - diff between tmp duration and total
                     part_length = total_duration - parts_duration
                     if part_length > 1: # seconds - 1 to account for rounding etc
+                        metadata = []
+                        try:
+                            for f_info in v:
+                                with open(f_info.filename + '.metadata', 'r') as f:
+                                    while line := f.readline():
+                                        time, info_json = tuple(line.split(maxsplit=1))
+                                        metadata.append((float(time), json.loads(info_json)))
+                                        metadata.sort()
+                        except:
+                            log.warning(f'No valid metadata for {first_tmp.name}')
+                            metadata = []
+
                         part_num = last_part_num + 1
                         part_name = get_filename(first_tmp.name, first_tmp.start, first_tmp.end, part_num, OUT_EXT)
                         part_path = path.join(OUT_DIR, part_name)
                         print(req_id + ' create part')
                         await ffmpeg.create_part([f.filename for f in v], part_path, parts_duration, total_duration)
+                        part_metadata = []
+                        prev_item = None
+                        in_bounds = False
+                        for time, info in metadata:
+                            if not in_bounds and time > parts_duration:
+                                if prev_item:
+                                    part_metadata.append(prev_item)
+                                in_bounds = True
+                            if in_bounds and time < total_duration:
+                                part_metadata.append((time, info))
+                            if time > total_duration:
+                                break
+                            prev_item = time, info
+                        if part_metadata:
+                            with open(part_path + '.metadata', 'w') as f:
+                                for time, info in part_metadata:
+                                    f.write(f'{time} {json.dumps(info)}\n')
+                                    f.flush()
                         print(req_id + ' end create part')
 
                     if now > first_tmp.end:

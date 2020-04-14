@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shlex
 
 log = logging.getLogger(__name__)
 
@@ -35,16 +36,40 @@ async def create_part(source_parts: list, dest, start, end):
     await proc.communicate()
     log.debug('create_part completed')
 
-async def convert(source, dest, format, bitrate):
+async def convert_with_stderr(source, dest, format, bitrate):
     proc: asyncio.Process = None
     try:
-        log.debug(f'convert {source} to {dest} ({format}, {bitrate})')
-        proc = await asyncio.create_subprocess_exec(
-            'ffmpeg',
-            '-i', source, '-acodec', format, '-b:a', bitrate, '-loglevel', 'error', '-nostats', '-flush_packets', '1', '-y', dest
-        )
-        await proc.communicate()
-        log.debug('convert finished')
+        log.info(f'convert {source} to {dest} ({format}, {bitrate})')
+        args = ['ffmpeg', '-i', source, '-acodec', format, '-b:a', bitrate, '-flush_packets', '1', '-y', dest]
+        log.debug(' '.join((shlex.quote(s) for s in args)))
+        proc = await asyncio.create_subprocess_exec(*args, stderr=asyncio.subprocess.PIPE)
+
+        stderr_available = asyncio.Event()
+        stderr_buffer = []
+        
+        async def read_stderr():
+            while not proc.stderr.at_eof():
+                line = await proc.stderr.readline()
+                if line:
+                    log.debug(line)
+                    stderr_buffer.append(line.decode().strip())
+                    stderr_available.set()
+            stderr_available.set()
+
+        stderr_task = asyncio.create_task(read_stderr())
+
+        while proc.returncode is None:
+            _, pending = await asyncio.wait({ stderr_available.wait(), proc.wait(), stderr_task }, return_when=asyncio.FIRST_COMPLETED)
+            for item in stderr_buffer:
+                yield item
+            stderr_buffer = []
+            stderr_available.clear()
+        
+        # To mop up any remaining exceptions
+        for t in asyncio.as_completed(pending):
+            await t
+
+        log.info('convert finished')
     except:
         if proc:
             try:
@@ -53,4 +78,8 @@ async def convert(source, dest, format, bitrate):
                 pass
         raise
     finally:
-        log.debug('convert completed')
+        log.info('convert completed')
+
+async def convert(source, dest, format, bitrate):
+    async for _ in convert_with_stderr(source, dest, format, bitrate):
+        pass

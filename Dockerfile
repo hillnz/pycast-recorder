@@ -1,15 +1,6 @@
-FROM debian:buster AS base
-
-RUN apt-get update && apt-get install -y \
-        python3.7 \
-        python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.8 AS base
 
 FROM base AS builder
-
-RUN apt-get update && apt-get install -y \
-        python3-venv \
-    && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install poetry
 
@@ -31,11 +22,11 @@ ENV PYCAST_HTTPBASE="http://localhost/files/"
 
 EXPOSE 80
 
-COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
-RUN pip3 install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
-
 RUN apt-get update && apt-get install -y \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
+RUN pip3 install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
 
 CMD [ "python3", "-m", "pycast_recorder" ]

@@ -170,7 +170,7 @@ async def monitor_recordings():
                 log.warning(f'File {task.output_file} has not appeared yet')
 
 async def record(url, file_name, format, bitrate):
-    with open(file_name + '.metadata', 'w') as metadata_f:
+    with open(file_name + '.playlist', 'w') as metadata_f:
 
         # Small buffer before writing to file to catch out of order items
         BUFFER_LENGTH = 2
@@ -373,7 +373,7 @@ async def finalise_recordings(skip_long_running=False):
                         metadata = []
                         try:
                             for f_info in v:
-                                with open(f_info.filename + '.metadata', 'r') as f:
+                                with open(f_info.filename + '.playlist', 'r') as f:
                                     while line := f.readline():
                                         time, info_json = tuple(line.split(maxsplit=1))
                                         metadata.append((float(time), json.loads(info_json)))
@@ -401,7 +401,7 @@ async def finalise_recordings(skip_long_running=False):
                                 break
                             prev_item = time, info
                         if part_metadata:
-                            with open(part_path + '.metadata', 'w') as f:
+                            with open(part_path + '.playlist', 'w') as f:
                                 for time, info in part_metadata:
                                     f.write(f'{time} {json.dumps(info)}\n')
                                     f.flush()

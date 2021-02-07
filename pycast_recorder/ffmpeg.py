@@ -49,7 +49,10 @@ async def convert_with_stderr(source, dest, codec, bitrate, format, append=False
         if append:
             async def read_stdout():
                 with open(dest, 'ab') as f:
-                    while chunk := await proc.stdout.read(64 * 1024):
+                    while True:
+                        chunk = await proc.stdout.read(64 * 1024)
+                        if not chunk:
+                            break
                         f.write(chunk)
             stdout_task = asyncio.create_task(read_stdout())
         

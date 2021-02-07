@@ -5,8 +5,7 @@ description = ""
 authors = ["Jono Hill <jonathan@hillnz.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-aioschedule = "^0.5.2"
+python = "^3.7"
 "ruamel.yaml" = "^0.16.0"
 lxml = "^4.3"
 aiohttp = "^3.5"

@@ -24,7 +24,8 @@ LAUNCH_TIME = datetime.now()
 LOGLEVEL = os.environ.get('LOGLEVEL', 'WARNING').upper()
 logging.basicConfig(level=LOGLEVEL)
 log = logging.getLogger(__name__)
-if DEBUG := os.environ.get('DEBUG', ''):
+DEBUG = os.environ.get('DEBUG', '')
+if DEBUG:
     for name in DEBUG.split(','):
         logging.getLogger(name).setLevel('DEBUG')
 
@@ -123,7 +124,7 @@ class Recording:
     last_output_file_size = 0
     last_output_file_time = datetime.now()
 
-recording_tasks: dict[Show, Recording] = {}
+recording_tasks = {}
 
 def get_filename(show_name, start, end, ext):
     start_f = datetime.strftime(start, DATE_FORMAT)
@@ -211,7 +212,8 @@ async def finalise_recordings():
     
     try:
         for stray in glob(os.path.join(TEMP_DIR, '*' + TMP_EXT)):
-            if file := await File.try_parse(stray):
+            file = await File.try_parse(stray)
+            if file:
                 show = None
                 try:
                     show = get_show_by_slug(file.name)
@@ -329,7 +331,8 @@ async def check_and_start_recordings():
     for show, start_time, end_time in get_live_shows():
         if show.slug not in recording_tasks.keys():
             log.info(f'Starting recording for "{show.name}"')
-            if new_recording := await start_recording(show, start_time, end_time):
+            new_recording = await start_recording(show, start_time, end_time)
+            if new_recording:
                 recording_tasks[show.slug] = new_recording
             next_end_time = min(next_end_time, end_time)
     return next_end_time

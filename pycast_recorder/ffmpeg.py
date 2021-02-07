@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
 import shlex
+from asyncio.subprocess import Process, PIPE, DEVNULL
+from subprocess import CalledProcessError
 
 log = logging.getLogger(__name__)
 
@@ -23,29 +26,35 @@ async def get_duration(filepath):
         log.debug(e)
         return 0
 
-async def create_part(source_parts: list, dest, start, end):
-    log.debug(f'create_part from {source_parts} to {dest} starting at {start} to {end}')
-    if len(source_parts) > 1:
-        input = 'concat:' + '|'.join(source_parts)
-    else:
-        input = source_parts[0]
-
-    proc = await asyncio.create_subprocess_exec(
-        'ffmpeg',
-        '-i', input, '-ss', _fmt_float(start), '-to', _fmt_float(end), '-acodec', 'copy', '-y', '-loglevel', 'error', '-nostats', dest)
-    await proc.communicate()
-    log.debug('create_part completed')
-
-async def convert_with_stderr(source, dest, format, bitrate):
+async def convert_with_stderr(source, dest, codec, bitrate, format, append=False):
     proc: asyncio.Process = None
     try:
-        log.info(f'convert {source} to {dest} ({format}, {bitrate})')
-        args = ['ffmpeg', '-i', source, '-acodec', format, '-b:a', bitrate, '-flush_packets', '1', '-y', dest]
-        log.debug(' '.join((shlex.quote(s) for s in args)))
-        proc = await asyncio.create_subprocess_exec(*args, stderr=asyncio.subprocess.PIPE)
+        log.info(f'convert {source} to {dest} ({codec}, {bitrate})')
+        args = ['ffmpeg', '-i', source, '-acodec', codec ]
+        if codec != 'copy':
+            args += [ '-b:a', bitrate, '-flush_packets', '1' ]
+        args += [ '-f', format, '-y' ]
+        if append:
+            args += [ '-' ]
+        else:
+            args += [ dest ]
+        full_cmd = ' '.join((shlex.quote(s) for s in args))
+        log.debug(full_cmd)
+        proc: Process = await asyncio.create_subprocess_exec(*args, stdout=PIPE if append else DEVNULL, stderr=PIPE)
 
         stderr_available = asyncio.Event()
         stderr_buffer = []
+
+        stdout_task = None
+        if append:
+            async def read_stdout():
+                with open(dest, 'ab') as f:
+                    while True:
+                        chunk = await proc.stdout.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            stdout_task = asyncio.create_task(read_stdout())
         
         async def read_stderr():
             while not proc.stderr.at_eof():
@@ -58,9 +67,17 @@ async def convert_with_stderr(source, dest, format, bitrate):
 
         stderr_task = asyncio.create_task(read_stderr())
 
+        full_stderr = ''
+        pending = set()
         while proc.returncode is None:
-            _, pending = await asyncio.wait({ stderr_available.wait(), proc.wait(), stderr_task }, return_when=asyncio.FIRST_COMPLETED)
+            pending = { stderr_available.wait(), proc.wait(), stderr_task }
+            if append:
+                pending.add(stdout_task)
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                await task
             for item in stderr_buffer:
+                full_stderr += item + '\n'
                 yield item
             stderr_buffer = []
             stderr_available.clear()
@@ -69,6 +86,14 @@ async def convert_with_stderr(source, dest, format, bitrate):
         for t in asyncio.as_completed(pending):
             await t
 
+        if proc.returncode != 0:
+            log.error('ffmpeg process failed')
+            try:
+                if os.stat(dest).st_size == 0:
+                    os.remove(dest)
+            except:
+                pass
+            raise CalledProcessError(proc.returncode, full_cmd, '', full_stderr)
         log.info('convert finished')
     except:
         if proc:
@@ -80,6 +105,6 @@ async def convert_with_stderr(source, dest, format, bitrate):
     finally:
         log.info('convert completed')
 
-async def convert(source, dest, format, bitrate):
-    async for _ in convert_with_stderr(source, dest, format, bitrate):
+async def convert(source, dest, codec, bitrate, format, append=False):
+    async for _ in convert_with_stderr(source, dest, codec, bitrate, format, append):
         pass

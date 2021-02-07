@@ -31,7 +31,8 @@
             "module": "pycast_recorder",
             "console": "integratedTerminal",
             "env": {
-                "LOGLEVEL": "DEBUG"
+                "DEBUG": "__main__",
+                "PYCAST_TEST_MODE": "true"
             }
         },
         {

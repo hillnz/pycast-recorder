@@ -1,5 +1,5 @@
 {
-    "python.pythonPath": "/Users/jono/repos/pycast-recorder/.venv/bin/python3",
+    "python.pythonPath": ".venv/bin/python3.7",
     "cSpell.enabledLanguageIds": [
         "asciidoc",
         "c",

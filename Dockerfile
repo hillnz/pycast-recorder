@@ -1,8 +1,19 @@
-FROM python:3.9 AS base
+# renovate: datasource=repology depName=raspbian_stable/python3-defaults
+ARG PYTHON_VERSION=3.7.3
+FROM python:${PYTHON_VERSION} AS base
+
+ARG TARGETPLATFORM
+# Use prebuilt wheels for armv7
+RUN if [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
+        echo "hello arm"; \
+        echo "[global]\nextra-index-url=https://www.piwheels.org/simple" >/etc/pip.conf; \
+    fi
 
 FROM base AS builder
 
-RUN pip3 install poetry
+# renovate: datasource=pypi depName=poetry
+ARG POETRY_VERSION=1.1.4
+RUN pip install poetry==${POETRY_VERSION}
 
 WORKDIR /usr/src/pycast_recorder
 COPY . .
@@ -27,6 +38,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/pycast_recorder/dist /tmp/dist
-RUN pip3 install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
+RUN pip install $(ls /tmp/dist/*.whl) && rm -rf /tmp/dist
 
-CMD [ "python3", "-m", "pycast_recorder" ]
+CMD [ "python", "-m", "pycast_recorder" ]

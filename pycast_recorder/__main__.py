@@ -243,7 +243,7 @@ async def get_show_as_podcast(name):
 
     def file_to_item(f):
         return E.item(
-            E.title(f'{name} - {datetime.strftime(f.start, "%Y-%m-%d")} (Part {f.part})'),
+            E.title(f'{name} - {datetime.strftime(f.start, "%Y-%m-%d")}'),
             it.author(name),
             it.summary(''),
             E.enclosure(

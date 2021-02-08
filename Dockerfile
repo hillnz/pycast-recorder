@@ -5,7 +5,6 @@ FROM python:${PYTHON_VERSION} AS base
 ARG TARGETPLATFORM
 # Use prebuilt wheels for armv7
 RUN if [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
-        echo "hello arm"; \
         echo "[global]\nextra-index-url=https://www.piwheels.org/simple" >/etc/pip.conf; \
     fi
 
@@ -13,7 +12,7 @@ FROM base AS builder
 
 # renovate: datasource=pypi depName=poetry
 ARG POETRY_VERSION=1.1.4
-RUN pip install poetry==${POETRY_VERSION}
+RUN pip install poetry==${POETRY_VERSION} --prefer-binary
 
 WORKDIR /usr/src/pycast_recorder
 COPY . .

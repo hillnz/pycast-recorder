@@ -106,7 +106,7 @@ class ShowSchedule(BaseModel):
     end: time
 
     @validator('every', pre=True, each_item=True)
-    def check_every(_, value):
+    def check_every(cls, value):
         try:
             return DAYS_OF_WEEK[value]
         except KeyError:

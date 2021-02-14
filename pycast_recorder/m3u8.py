@@ -1,129 +1,122 @@
 import asyncio
-import aiohttp
 import logging
+from itertools import takewhile
+from time import time
+
+import aiohttp
 
 log = logging.getLogger(__name__)
+
+MAGIC = '#EXTM3U'
 
 class M3u8:
 
     def __init__(self, stream_url):
         self.stream_url = stream_url
-        self.target_duration = 5
-        self.__http = None
-        self.__response = None
 
-    def _http(self):
-        if not self.__http:
-            raise Exception('No http session')
-        return self.__http
-    
-    def _response(self):
-        if not self.__response:
-            raise Exception('No response')
-        return self.__response
-
-    async def _readline(self):
-        return (await self._response().content.readline()).decode().strip()
-
-    async def _read_stream_inf(self, line):
-        url = await self._readline()
-        m3u8 = M3u8(url)
+    async def _read_stream_inf(_, url_line):
+        """Example:
+            #EXT-X-STREAM-INF:BANDWIDTH=33000,CODECS="mp4a.40.5"
+            https://url-to-another-stream.m3u8
+        """
+        m3u8 = M3u8(url_line)
         async for result in m3u8.read_song_info():
             yield result
 
-    async def _read_targetduration(self, line):
-        self.target_duration = max(int(line.split(':')[1]), 1)
-
-    async def _read_inf(self, line):
-        # TODO Is there an existing parser that can parse this format?
-        
-        line = list(line)
+    def _read_inf(_, tag_line, url_line):
         tag_map = {}
-        tag_map['file'] = await self._readline()
-        pop = lambda: line.pop(0)
+        tag_map['file'] = url_line
 
-        try:
-            # tag (discard)
-            while pop() != ':':
-                pass
+        chars = iter(tag_line)
+        pop = lambda: next(chars, None)
+        until = lambda c: ''.join(takewhile(lambda d: c != d, chars))
 
-            # duration (discard)
-            while pop() != ',':
-                pass
+        # duration
+        tag_map['duration'] = float(until(','))
 
-            while True:
-                # key
-                key = ''
-                while (c := pop()) != '=':
-                    key += c
-                
-                # value
-                value = ''
-                escape = False
-                quote = False
-                while True:
-                    c = pop()
-                    if escape:
+        eol = False
+        while not eol:
+            # key
+            key = until('=')
+            
+            # value
+            value = ''
+            escape = False
+            quote = False
+            while not eol:
+                c = pop()
+                if not c:
+                    eol = True
+                    break
+                if escape:
+                    value += c
+                    escape = False
+                elif c == '\\':
+                    escape = True
+                elif quote:
+                    if c == '"':
+                        quote = False
+                    else:
                         value += c
-                        escape = False
-                    elif c == '\\':
-                        escape = True
-                    elif quote:
-                        if c == '"':
-                            quote = False
-                        else:
-                            value += c
-                    elif c == '"':
-                        quote = True
-                    elif c == ',':
-                        break
+                elif c == '"':
+                    quote = True
+                elif c == ',':
+                    break
 
-                tag_map[key] = value
+            tag_map[key] = value
 
-        except IndexError:
-            if key and value:
-                tag_map[key] = value
-
-        if tag_map:
-            yield tag_map
+        return tag_map
 
     async def read_song_info(self):
-        if self.__http or self.__response:
-            raise Exception('Already reading')
+        recent = [None] * 20
+        def not_recent(item):
+            file = item['file']
+            if file in recent:
+                return False
+            recent.append(file)
+            recent.pop(0)
+            return True
 
-        try:
-            async with aiohttp.ClientSession() as http:
-                self.__http = http
+        async with aiohttp.ClientSession() as http:
+            while True:
+                target_duration = 5
+                response = await http.get(self.stream_url)
+                async def read(n=-1): 
+                    return (await response.content.read(n)).decode().strip()
+                async def readline():
+                    return (await response.content.readline()).decode().strip()
 
+                header = await read(len(MAGIC))
+                if header != '#EXTM3U':
+                    raise Exception('Not an m3u8 stream')
+
+                await readline() # To consume rest of header line
+                line2 = await readline()
                 while True:
-                    self.__response = await http.get(self.stream_url)
+                    line1 = line2
+                    line2 = await readline()
+                    if not line1:
+                        break
+                    try:
+                        tag, value = tuple(line1.split(':', maxsplit=1))
+                    except ValueError:
+                        tag, value = line1, ''
+                    if tag == '#EXT-X-STREAM-INF':
+                        async for item in self._read_stream_inf(line2):
+                            if not_recent(item):
+                                yield item
+                    elif tag == '#EXT-X-TARGETDURATION':
+                        target_duration = min(target_duration, max(int(value), 1))
+                    elif tag == '#EXTINF': 
+                        inf = self._read_inf(value, line2)
+                        target_duration = max(0, min(target_duration, inf.get('duration', target_duration)) - 1)
+                        if not_recent(inf):
+                            start = time()
+                            yield inf
+                            end = time()
+                            target_duration = max(0, target_duration - (end - start))
 
-                    header = await self._readline()
-                    if header.strip() != '#EXTM3U':
-                        raise Exception('Not an m3u8 stream')
-
-                    while line := await self._readline():
-                        tag_map = {
-                            '#EXT-X-STREAM-INF': self._read_stream_inf,
-                            '#EXT-X-TARGETDURATION': self._read_targetduration,
-                            '#EXTINF': self._read_inf
-                        }
-                        try:
-                            f = next((f for t, f in tag_map.items() if line.startswith(t + ':')))
-                            result = f(line)
-                            try:
-                                async for item in result:
-                                    yield item
-                            except TypeError:
-                                await result
-                        except StopIteration:
-                            pass
-                    
-                    await asyncio.sleep(self.target_duration)
-                    
-        finally:
-            self.__http = None
-            self.__response = None
+                await asyncio.sleep(target_duration)
 
 if __name__ == "__main__":
 

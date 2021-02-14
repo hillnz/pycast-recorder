@@ -210,7 +210,7 @@ def iter_file(f, chunk_size=64 * 1024):
 async def record_m3u8(url, output_file):
     APPENDABLE_FORMATS = { 'aac', 'mpegts' }
 
-    ffmpeg_out = ffmpeg.convert('-', output_file, OUT_CODEC, OUT_BITRATE, TMP_FORMAT, append=True)
+    ffmpeg_out = ffmpeg.convert('-', output_file, OUT_CODEC, OUT_BITRATE, TMP_FORMAT, append=False)
     try:
         await ffmpeg_out.asend(None)
 

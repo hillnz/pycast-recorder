@@ -4,13 +4,18 @@ import logging
 import os
 import re
 import signal
-import sys
-from datetime import date, datetime, time, timedelta
+import traceback
+from contextlib import contextmanager
+from datetime import datetime, time, timedelta
 from email.utils import formatdate as formatemaildate
 from glob import glob
-from os import listdir, path, read
+from os import listdir, path
+from shutil import rmtree
+from tempfile import mkdtemp
+from time import time as clock_time
 from typing import List
 
+import aiohttp
 from aiohttp import web
 from lxml import etree
 from lxml.builder import E, ElementMaker
@@ -18,6 +23,7 @@ from pydantic import AnyHttpUrl, BaseModel, validator
 from ruamel.yaml import YAML
 
 from . import ffmpeg
+from .m3u8 import M3u8
 
 LAUNCH_TIME = datetime.now()
 
@@ -31,7 +37,8 @@ if DEBUG:
 
 CONFIG_FILE = os.environ.get('PYCAST_SHOWS', 'shows.yaml')
 
-RECORDING_WATCHDOG_TIME = 10
+RECORDING_WATCHDOG_TIME = 20
+FILE_FIRST_APPEARANCE_TIME = 180
 DATE_FORMAT = '%Y%m%d%H%M'
 FILE_NAME = '{name}_{start}_{end}'
 TMP_FORMAT = 'mpegts'
@@ -40,7 +47,7 @@ OUT_EXT = os.environ.get('PYCAST_EXT', '.m4a')
 OUT_FORMAT = os.environ.get('PYCAST_FILE_FORMAT', 'ipod')
 OUT_CODEC = os.environ.get('PYCAST_FORMAT', 'aac')
 OUT_BITRATE = os.environ.get('PYCAST_BITRATE', '128k')
-RE_FILE_NAME = re.compile(r'(?P<name>.+)_(?P<start>\d{12})_(?P<end>\d{12})')
+RE_FILE_NAME = re.compile(r'(?P<name>.+)_(?P<start>\d{12})_(?P<end>\d{12})(?P<suffix>\d*)')
 
 # TODO
 TEMP_DIR = os.environ.get('PYCAST_TEMP', '/tmp/recording')
@@ -60,7 +67,7 @@ class File:
         match = RE_FILE_NAME.search(self.basename)
         if not match or self.filename.endswith('.metadata') or self.filename.endswith('.playlist'):
             raise ValueError()
-        self.name, start, end = match.group('name', 'start', 'end')
+        self.name, start, end, self.suffix = match.group('name', 'start', 'end', 'suffix')
         self.start = datetime.strptime(start, DATE_FORMAT)
         self.end = datetime.strptime(end, DATE_FORMAT)
 
@@ -81,7 +88,7 @@ class File:
                 self.size = cached['size']
                 self.mtime = datetime.fromtimestamp(cached['mtime'])
         else:
-            self.duration = await ffmpeg.get_duration(self.filename)
+            self.duration = (await ffmpeg.get_format(self.filename)).duration
             stats = os.stat(self.filename)
             self.size = stats.st_size
             self.mtime = datetime.fromtimestamp(stats.st_mtime)
@@ -99,7 +106,7 @@ class ShowSchedule(BaseModel):
     end: time
 
     @validator('every', pre=True, each_item=True)
-    def check_every(cls, value):
+    def check_every(_, value):
         try:
             return DAYS_OF_WEEK[value]
         except KeyError:
@@ -126,10 +133,18 @@ class Recording:
 
 recording_tasks = {}
 
-def get_filename(show_name, start, end, ext):
+@contextmanager
+def log_time(name='Code'):
+    start = clock_time()
+    try:
+        yield
+    finally:
+        log.debug(f'{name} took {clock_time() - start}s to execute')
+
+def get_filename(show_name, start, end, ext='', suffix=''):
     start_f = datetime.strftime(start, DATE_FORMAT)
     end_f = datetime.strftime(end, DATE_FORMAT)
-    return FILE_NAME.format(name=show_name, start=start_f, end=end_f) + ext
+    return FILE_NAME.format(name=show_name, start=start_f, end=end_f) + suffix + ext
 
 async def read_show_files(files, name=None, condition=lambda _: True, cache_metadata=True):
     result: List[File] = []
@@ -159,30 +174,137 @@ async def monitor_recordings():
                     recording.last_output_file_size = new_size
                 recording.last_output_file_time = datetime.now()
             except FileNotFoundError:
-                if secs_since_last_update >= (RECORDING_WATCHDOG_TIME * 2):
+                if secs_since_last_update >= FILE_FIRST_APPEARANCE_TIME:
                     log.warning(f'File {recording.output_file} still has not appeared after {secs_since_last_update}s. Cancelling recording task.')
                     recording.task.cancel()
                 else:
                     log.warning(f'File {recording.output_file} has not appeared yet')
 
+@contextmanager
+def make_temp(name):
+    tmp_dir = mkdtemp()
+    try:
+        yield os.path.join(tmp_dir, name)
+    finally:
+        rmtree(tmp_dir)
+
+async def download_file(http_session: aiohttp.ClientSession, url, dest):
+    for n in range(2):
+        try:
+            response = await http_session.get(url)
+            with open(dest, 'wb') as f:
+                async for chunk, _ in response.content.iter_chunks():
+                    f.write(chunk)
+            return
+        except:
+            if n == 1: # if second attempt also failed
+                raise
+
+def iter_file(f, chunk_size=64 * 1024):
+    while True:
+        chunk = f.read(chunk_size)
+        if not chunk:
+            break
+        yield chunk
+
+async def record_m3u8(url, output_file):
+    APPENDABLE_FORMATS = { 'aac', 'mpegts' }
+
+    ffmpeg_out = ffmpeg.convert('-', output_file, OUT_CODEC, OUT_BITRATE, TMP_FORMAT, append=True)
+    try:
+        await ffmpeg_out.asend(None)
+
+        async def get_exact_duration(file_path, format: ffmpeg.FfmpegFormat):
+            if format.probe_score >= 100:
+                return format.duration
+            else:
+                # Change format to get specific duration
+                with make_temp('chunk.mkv') as mkv_tmp:
+                    await ffmpeg.convert_file(file_path, mkv_tmp, 'copy', 0, 'matroska')
+                    return (await ffmpeg.get_format(mkv_tmp)).duration
+
+        async def append_to_output(file_path, format: ffmpeg.FfmpegFormat):
+            # Check if we need to convert to an appendable format
+            if format.name in APPENDABLE_FORMATS:
+                with open(file_path, 'rb') as f:
+                    for chunk in iter_file(f):
+                        await ffmpeg_out.asend(chunk)
+            else:
+                # Convert before appending
+                async for chunk in ffmpeg.convert(tmp, '-', 'copy', 0, TMP_FORMAT):
+                    await ffmpeg_out.asend(chunk)
+
+        timecode = 0
+        chapters = []
+        prev_chapter = None
+        m3u8 = M3u8(url)
+        timeout = aiohttp.ClientTimeout(connect=10, sock_read=10)
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            async for chunk in m3u8.read_song_info():
+                with make_temp('chunk') as tmp:
+                    await download_file(http, chunk['file'], tmp)
+                    format = await ffmpeg.get_format(tmp)
+                    duration_task = asyncio.create_task(get_exact_duration(tmp, format))
+                    append_task = asyncio.create_task(append_to_output(tmp, format))
+                    await asyncio.wait([ duration_task, append_task ])
+                    duration = await duration_task
+                    await append_task
+
+                    artist = chunk.get('artist', '').title()
+                    title = chunk.get('title', '').title()
+                    if artist and title:
+                        chapter_name = f'{artist} - {title}'
+                    elif artist or title:
+                        chapter_name = artist or title
+                    else:
+                        chapter_name = prev_chapter
+
+                    if prev_chapter != chapter_name:
+                        chapter = (timecode, chapter_name)
+                        chapters.append(chapter)
+                        log.info(chapter)
+                    prev_chapter = chapter_name
+                    timecode += duration
+    finally:
+        await ffmpeg_out.aclose()
+
 async def record(show: Show, output_file: str, start_time: datetime, end_time: datetime):
     """Actually record. Runs as long as the recording does, completes when finished."""
     log.debug(f'record({show.slug}, {output_file}, {start_time}, {end_time}')
+    async def _record():
+        try:
+            await record_m3u8(show.stream, output_file)
+        except asyncio.CancelledError:
+            raise
+        except:
+            log.info(f'Recording as m3u8 didn\'t work, falling back to plain ffmpeg recording')
+            log.debug(traceback.format_exc())
+            await ffmpeg.convert_file(show.stream, output_file, OUT_CODEC, OUT_BITRATE, TMP_FORMAT, append=True)
     try:
         if end_time > datetime.now():
             rec_seconds = (end_time - datetime.now()).total_seconds()
             try:
                 log.info(f'Recording {show.name}')
-                await asyncio.wait_for(ffmpeg.convert(show.stream, output_file, OUT_CODEC, OUT_BITRATE, TMP_FORMAT, append=True), timeout=rec_seconds)
+                await asyncio.wait_for(_record(), timeout=rec_seconds)
             except asyncio.TimeoutError:
                 pass
         else:
             log.info(f'{show.name} has already finished')
         log.info(f'Finished recording {show.name}')
-        # Convert resulting file to its final form
-        final_file = os.path.join(OUT_DIR, get_filename(show.slug, start_time, end_time, OUT_EXT))
-        await ffmpeg.convert(output_file, final_file, 'copy', 0, OUT_FORMAT)
-        os.remove(output_file)
+        # Locate and combine all recording files
+        base_name = os.path.join(TEMP_DIR, get_filename(show.slug, start_time, end_time))
+        rec_files = sorted(glob(base_name + '*'))
+        with make_temp('combined.ts') as tmp_file:
+            with open(tmp_file, 'ab') as dest_f:
+                for f_path in rec_files:
+                    with open(f_path, 'rb') as src_f:
+                        for chunk in iter_file(src_f):
+                            dest_f.write(chunk)
+            # Convert resulting file to its final form
+            final_file = os.path.join(OUT_DIR, get_filename(show.slug, start_time, end_time, OUT_EXT))
+            await ffmpeg.convert_file(tmp_file, final_file, 'copy', 0, OUT_FORMAT)
+        for f_path in rec_files:
+            os.remove(f_path)
     except asyncio.CancelledError:
         pass
 
@@ -193,7 +315,8 @@ async def start_recording(show, start_time: datetime, end_time: datetime) -> Rec
         log.warning('Already recording ' + show.name)
         return
 
-    output_file = path.join(TEMP_DIR, get_filename(show.slug, start_time, end_time, TMP_EXT))
+    suffix = str(int(datetime.utcnow().timestamp()))
+    output_file = path.join(TEMP_DIR, get_filename(show.slug, start_time, end_time, TMP_EXT, suffix))
 
     recording = Recording()
     recording.output_file = output_file
@@ -370,7 +493,7 @@ def read_config():
     if os.environ.get('PYCAST_TEST_MODE', False):
         config.shows.append(Show(
             name='test-test-test',
-            stream='https://stream01.ungrounded.net/easylistening',
+            stream='https://ais-nzme.streamguys1.com/nz_009/playlist.m3u8',
             schedule=ShowSchedule(
                 every=['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
                 start=(LAUNCH_TIME + timedelta(seconds=10)).time(),
@@ -412,7 +535,7 @@ async def run_tasks_forever():
             next_end_task = asyncio.create_task(await_next_recording_end())
             pending.add(next_end_task)
 
-        sleep_seconds = max(0, (next_wakeup_time - datetime.now()).total_seconds())
+        sleep_seconds = max(1, (next_wakeup_time - datetime.now()).total_seconds())
         if sleep_seconds > RECORDING_WATCHDOG_TIME:
             log.info(f'Sleeping for {sleep_seconds} seconds...')
         sleep_task = asyncio.create_task(asyncio.sleep(sleep_seconds))

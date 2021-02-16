@@ -23,7 +23,7 @@ FROM base
 
 ENV PYCAST_SHOWS=/config/shows.yaml
 ENV PYCAST_EXT=".m4a"
-ENV PYCAST_FORMAT="aac"
+ENV PYCAST_CODEC="aac"
 ENV PYCAST_BITRATE="128k"
 ENV PYCAST_TEMP=/config/recording
 ENV PYCAST_OUT=/config/www

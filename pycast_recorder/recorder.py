@@ -104,12 +104,12 @@ class Show(BaseModel):
         return ''.join([c if c.isalpha() or c.isdigit() else '-' for c in self.name])
 
 class RecorderConfig(BaseModel):
-    extension: str  = '.m4a'
-    format: str     = 'ipod'
-    codec: str      = 'aac'
-    bitrate: str    = '128k'
-    temp_dir: str   = '/tmp/recording'
-    out_dir: str    = '/tmp/recordings'
+    extension: str  = os.environ.get('PYCAST_EXT', '.m4a')
+    format: str     = os.environ.get('PYCAST_FORMAT', 'ipod')
+    codec: str      = os.environ.get('PYCAST_CODEC', 'aac')
+    bitrate: str    = os.environ.get('PYCAST_BITRATE', '128k')
+    temp_dir: str   = os.environ.get('PYCAST_TEMP', '/tmp/recording')
+    out_dir: str    = os.environ.get('PYCAST_OUT', '/tmp/recordings')
 
 class ServerConfig(BaseModel):
     http_port: int      = int(os.environ.get('PYCAST_PORT', '80'))

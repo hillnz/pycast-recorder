@@ -37,10 +37,11 @@ async def schedule(test_seconds: int, wait=5):
     total = test_seconds + wait
     start = (now + timedelta(seconds=wait)).time()
     end = (now + timedelta(seconds=total)).time()
+    TEST_NAME = 'test-test-test'
     config = recorder.Config(
         shows = [
             recorder.Show(
-                name        = 'test-test-test',
+                name        = TEST_NAME,
                 stream      = 'https://ais-nzme.streamguys1.com/nz_009/playlist.m3u8',
                 schedule    = recorder.ShowSchedule(
                     every   = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
@@ -53,7 +54,8 @@ async def schedule(test_seconds: int, wait=5):
     with make_temp_dir() as rec_dir:
         config.recorder = recorder.RecorderConfig(out_dir=rec_dir)
         config.server = recorder.ServerConfig(http_port=get_random_port())
-        recorder_task = asyncio.create_task(Recorder(config).run())
+        instance = Recorder(config)
+        recorder_task = asyncio.create_task(instance.run())
         await asyncio.sleep(total + 5)
         recorder_task.cancel()
         try:
@@ -66,6 +68,9 @@ async def schedule(test_seconds: int, wait=5):
         format = await ffmpeg.get_format(files[0])
         assert format.duration > 0
         assert abs(test_seconds - format.duration) < 10
+        feed = str(await instance.get_show_as_podcast(TEST_NAME))
+        assert str(config.server.http_base_url) in feed
+        assert 'audio/mp4' in feed
 
 async def test_basic():
     await schedule(10)

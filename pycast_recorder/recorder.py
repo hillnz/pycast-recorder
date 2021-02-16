@@ -19,6 +19,7 @@ from aiohttp import web
 from lxml import etree
 from lxml.builder import E, ElementMaker
 from pydantic import AnyHttpUrl, BaseModel, validator
+from pydantic.utils import deep_update
 from ruamel.yaml import YAML
 
 from . import ffmpeg
@@ -27,8 +28,6 @@ from .m3u8 import M3u8
 log = logging.getLogger(__name__)
 
 LAUNCH_TIME = datetime.now()
-
-CONFIG_FILE = os.environ.get('PYCAST_SHOWS', 'shows.yaml')
 
 RECORDING_WATCHDOG_TIME = 20
 FILE_FIRST_APPEARANCE_TIME = 180
@@ -113,11 +112,11 @@ class RecorderConfig(BaseModel):
     out_dir: str    = '/tmp/recordings'
 
 class ServerConfig(BaseModel):
-    http_port: int      = 80
-    http_base_url: str  = 'http://localhost/files/'
+    http_port: int      = int(os.environ.get('PYCAST_PORT', '80'))
+    http_base_url: str  = os.environ.get('PYCAST_HTTPBASE', 'http://localhost/files/')
 
 class Config(BaseModel):
-    shows: List[Show]
+    shows: List[Show] = []
     recorder: RecorderConfig = RecorderConfig()
     server: ServerConfig = ServerConfig()
 
@@ -187,10 +186,11 @@ def iter_file(f, chunk_size=64 * 1024):
 
 class Recorder:
 
-    def __init__(self, config: Config = None) -> None:
+    def __init__(self, config: Config = Config(), config_file=os.environ.get('PYCAST_SHOWS', 'shows.yaml')) -> None:
         self._recording_tasks = {}
         self._static_config = config
         self._config = config
+        self._config_file = config_file
         self._read_config()
 
     async def _monitor_recordings(self):
@@ -500,11 +500,13 @@ class Recorder:
 
     def _read_config(self):
         old_config = self._config
-        if self._static_config:
+        try:
+            with open(self._config_file, 'r') as f:
+                config = Config(**deep_update(self._static_config.dict(), YAML().load(f)))
+            # Merge static shows back in
+            config.shows.extend(self._static_config.shows)
+        except FileNotFoundError:
             config = self._static_config
-        else:
-            with open(CONFIG_FILE, 'r') as f:
-                config = Config(**YAML().load(f))
         if old_config != config:
             log.debug(config)
         self._config = config

@@ -1,14 +1,6 @@
-# renovate: datasource=repology depName=raspbian_stable/python3-defaults
-ARG PYTHON_VERSION=3.7.3
-FROM python:${PYTHON_VERSION} AS base
-
-ARG TARGETPLATFORM
-# Use prebuilt wheels for armv7
-RUN if [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
-        echo "[global]\nextra-index-url=https://www.piwheels.org/simple" >/etc/pip.conf; \
-    fi
-
-FROM base AS builder
+# renovate: datasource=docker depName=python
+ARG PYTHON_VERSION=3.9.2
+FROM --platform=$BUILDPLATFORM python:${PYTHON_VERSION} AS builder
 
 # renovate: datasource=pypi depName=poetry
 ARG POETRY_VERSION=1.1.4
@@ -19,7 +11,7 @@ COPY . .
 
 RUN poetry build -f wheel
 
-FROM base
+FROM python:${PYTHON_VERSION}
 
 ENV PYCAST_SHOWS=/config/shows.yaml
 ENV PYCAST_EXT=".m4a"

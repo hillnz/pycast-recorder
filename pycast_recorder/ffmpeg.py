@@ -5,7 +5,9 @@ import os
 import shlex
 from asyncio.subprocess import DEVNULL, PIPE, Process
 from dataclasses import dataclass
+from io import StringIO
 from subprocess import CalledProcessError
+from typing import List, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +36,48 @@ async def get_format(filepath):
         log.debug('get_format exception')
         log.debug(e)
         return None
+
+def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple[int, str]]):
+    def escape(s):
+        return ''.join((
+            f'\\{c}' if c in [ '=', ';', '#', '\\', '\n' ] else c
+            for c in s
+        ))
+    text = StringIO()
+    w = lambda s: text.write(escape(s))
+    l = lambda s: text.write(escape(s) + '\n')
+    tag = lambda k, v: text.write(f'{escape(k)}={escape(v)}\n')
+    
+    l(';FFMETADATA1')
+    tag('title', title)
+    tag('artist', artist)
+
+    def around(iterable):
+        iterable = iter(iterable)
+        prev = next(iterable)
+        curr = next(iterable)
+        yield None, prev, curr
+        for item in iter:
+            yield prev, curr, item
+        yield curr, item, None
+
+    # Loop runs one behind
+    chapters.append(0,'')
+    timecode = -1
+    name = ''
+    for prev, this, after in around(chapters):
+        
+        if timecode >= 0:
+            l('[CHAPTER]')
+            tag('TIMEBASE', '1/1000')
+            tag('START', int(timecode / 1000))
+            tag('')
+        timecode = next_timecode
+        name = next_name
+
+        
+    
+
 
 async def convert(source, dest, codec, bitrate, format, append=False):
     if source == '-' and dest == '-':

@@ -252,22 +252,7 @@ class Recorder:
                                     duration = await duration_task
                                 finally: # to ensure task result is always retrieved
                                     await append_task
-
-                                artist = chunk.get('artist', '').title()
-                                title = chunk.get('title', '').title()
-                                if artist and title:
-                                    chapter_name = f'{artist} - {title}'
-                                elif artist or title:
-                                    chapter_name = artist or title
-                                else:
-                                    chapter_name = prev_chapter
-
-                                if prev_chapter != chapter_name:
-                                    chapter = (timecode, chapter_name)
-                                    chapters.append(chapter)
-                                    log.info(chapter)
-                                prev_chapter = chapter_name
-                                timecode += duration
+                            break
                         except asyncio.CancelledError:
                             raise
                         except:
@@ -277,6 +262,22 @@ class Recorder:
                                 await asyncio.sleep(1)
                             else: # if second attempt also failed
                                 raise
+                    artist = chunk.get('artist', '').title()
+                    title = chunk.get('title', '').title()
+                    if artist and title:
+                        chapter_name = f'{artist} - {title}'
+                    elif artist or title:
+                        chapter_name = artist or title
+                    else:
+                        chapter_name = prev_chapter
+
+                    if prev_chapter != chapter_name:
+                        chapter = (timecode, chapter_name)
+                        chapters.append(chapter)
+                        log.info(chapter)
+                    prev_chapter = chapter_name
+                    timecode += duration
+                        
         finally:
             await ffmpeg_out.aclose()
 

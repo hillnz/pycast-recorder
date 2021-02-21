@@ -67,7 +67,7 @@ async def schedule(test_seconds: int, wait=5):
         assert len(files) == 1
         format = await ffmpeg.get_format(files[0])
         assert format.duration > 0
-        assert abs(test_seconds - format.duration) < 20
+        assert abs(test_seconds - format.duration) < 10
         feed = str(await instance.get_show_as_podcast(TEST_NAME))
         assert str(config.server.http_base_url) in feed
         assert 'audio/mp4' in feed

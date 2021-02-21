@@ -239,45 +239,55 @@ class Recorder:
             m3u8 = M3u8(url)
             timeout = aiohttp.ClientTimeout(connect=10, sock_read=10)
             async with aiohttp.ClientSession(timeout=timeout) as http:
+                last_chunk_failed = False
                 async for chunk in m3u8.read_song_info():
-                    for n in range(2):
-                        try:
-                            with make_temp('chunk') as tmp:
-                                await download_file(http, chunk['file'], tmp)
-                                format = await ffmpeg.get_format(tmp)
-                                duration_task = asyncio.create_task(get_exact_duration(tmp, format))
-                                append_task = asyncio.create_task(append_to_output(tmp, format))
-                                await asyncio.wait([ duration_task, append_task ])
-                                try:
-                                    duration = await duration_task
-                                finally: # to ensure task result is always retrieved
-                                    await append_task
-                            break
-                        except asyncio.CancelledError:
-                            raise
-                        except:
-                            log.debug('Error during processing m3u8 chunk:')
-                            log.debug(traceback.format_exc())
-                            if n == 0:
-                                await asyncio.sleep(1)
-                            else: # if second attempt also failed
+                    try:
+                        for n in range(2):
+                            try:
+                                with make_temp('chunk') as tmp:
+                                    await download_file(http, chunk['file'], tmp)
+                                    format = await ffmpeg.get_format(tmp)
+                                    duration_task = asyncio.create_task(get_exact_duration(tmp, format))
+                                    append_task = asyncio.create_task(append_to_output(tmp, format))
+                                    await asyncio.wait([ duration_task, append_task ])
+                                    try:
+                                        duration = await duration_task
+                                    finally: # to ensure task result is always retrieved
+                                        await append_task
+                                break
+                            except asyncio.CancelledError:
                                 raise
-                    artist = chunk.get('artist', '').title()
-                    title = chunk.get('title', '').title()
-                    if artist and title:
-                        chapter_name = f'{artist} - {title}'
-                    elif artist or title:
-                        chapter_name = artist or title
-                    else:
-                        chapter_name = prev_chapter
+                            except:
+                                log.debug('Error during processing m3u8 chunk:')
+                                log.debug(traceback.format_exc())
+                                if n == 0:
+                                    await asyncio.sleep(1)
+                                else: # if second attempt also failed
+                                    raise
+                        artist = chunk.get('artist', '').title()
+                        title = chunk.get('title', '').title()
+                        if artist and title:
+                            chapter_name = f'{artist} - {title}'
+                        elif artist or title:
+                            chapter_name = artist or title
+                        else:
+                            chapter_name = prev_chapter
 
-                    if prev_chapter != chapter_name:
-                        chapter = (timecode, chapter_name)
-                        chapters.append(chapter)
-                        log.info(chapter)
-                    prev_chapter = chapter_name
-                    timecode += duration
-                        
+                        if prev_chapter != chapter_name:
+                            chapter = (timecode, chapter_name)
+                            chapters.append(chapter)
+                            log.info(chapter)
+                        prev_chapter = chapter_name
+                        timecode += duration
+                        last_chunk_failed = False
+                    except asyncio.CancelledError:
+                        raise
+                    except:
+                        log.error(f'Giving up on {chunk["file"]} because processing failed twice.')
+                        if last_chunk_failed:
+                            log.error('The previous chunk also failed so we are giving up all together')
+                            raise
+                        last_chunk_failed = True
         finally:
             await ffmpeg_out.aclose()
 

@@ -192,18 +192,23 @@ class Recorder:
             if secs_since_last_update >= RECORDING_WATCHDOG_TIME:
                 try:
                     new_size = os.stat(recording.output_file).st_size
+                    recording_started = new_size > 0
+                except FileNotFoundError:
+                    recording_started = False
+
+                if recording_started:
                     if new_size == recording.last_output_file_size:
                         log.warning(f'No change in filesize for {recording.output_file}. Current recording process will be killed')
                         recording.task.cancel()
                     else:
                         recording.last_output_file_size = new_size
                     recording.last_output_file_time = datetime.now()
-                except FileNotFoundError:
+                else:
                     if secs_since_last_update >= FILE_FIRST_APPEARANCE_TIME:
                         log.warning(f'File {recording.output_file} still has not appeared after {secs_since_last_update}s. Cancelling recording task.')
                         recording.task.cancel()
                     else:
-                        log.warning(f'File {recording.output_file} has not appeared yet')
+                        log.warning(f'File {recording.output_file} has not appeared yet')                    
 
     async def _record_m3u8(self, url, output_file):
         APPENDABLE_FORMATS = { 'aac', 'mpegts' }
@@ -317,15 +322,19 @@ class Recorder:
                 with open(tmp_file, 'ab') as dest_f:
                     for f_path in rec_files:
                         # Convert chunk if needed, or just append
-                        chunk_format = await ffmpeg.get_format(f_path)
-                        if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
-                            log.info(f'{f_path} needs format conversion first')
-                            async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
-                                dest_f.write(buff)
-                        else:
-                            with open(f_path, 'rb') as src_f:
-                                for chunk in iter_file(src_f):
-                                    dest_f.write(chunk)
+                        try:
+                            chunk_format = await ffmpeg.get_format(f_path)
+                            if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
+                                log.info(f'{f_path} needs format conversion first')
+                                async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
+                                    dest_f.write(buff)
+                            else:
+                                with open(f_path, 'rb') as src_f:
+                                    for chunk in iter_file(src_f):
+                                        dest_f.write(chunk)
+                        except:
+                            log.error(f'Exception occured finalising recording chunk {f_path}. This chunk will be skipped.')
+                            log.error(traceback.format_exc())
                 # Convert resulting file to its final form
                 final_file = os.path.join(config.recorder.out_dir, get_filename(show.slug, start_time, end_time, config.recorder.extension))
                 log.info(f'Saving final recording to {final_file}')

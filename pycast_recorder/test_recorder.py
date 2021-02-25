@@ -51,12 +51,15 @@ async def schedule(test_seconds: int, wait=5):
             )
         ]
     )
-    with make_temp_dir() as rec_dir:
-        config.recorder = recorder.RecorderConfig(out_dir=rec_dir)
+    with make_temp_dir() as tmp_dir:
+        rec_dir = os.path.join(tmp_dir, 'rec')
+        config.recorder = recorder.RecorderConfig(out_dir=rec_dir, temp_dir=os.path.join(tmp_dir, 'tmp'))
         config.server = recorder.ServerConfig(http_port=get_random_port())
         instance = Recorder(config)
         recorder_task = asyncio.create_task(instance.run())
         await asyncio.sleep(total + 5)
+        if not os.listdir(rec_dir):
+            await asyncio.sleep(10)
         recorder_task.cancel()
         try:
             await recorder_task
@@ -67,7 +70,7 @@ async def schedule(test_seconds: int, wait=5):
         assert len(files) == 1
         format = await ffmpeg.get_format(files[0])
         assert format.duration > 0
-        assert abs(test_seconds - format.duration) < 10
+        assert abs(test_seconds - format.duration) < 15
         feed = str(await instance.get_show_as_podcast(TEST_NAME))
         assert str(config.server.http_base_url) in feed
         assert 'audio/mp4' in feed
@@ -80,3 +83,6 @@ async def test_in_progress():
 
 async def test_longer():
     await schedule(600)
+
+if __name__ == '__main__':
+    asyncio.run(schedule(10, 0))

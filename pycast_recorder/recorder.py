@@ -207,11 +207,8 @@ class Recorder:
 
     async def _record_m3u8(self, url, output_file):
         APPENDABLE_FORMATS = { 'aac', 'mpegts' }
-
-        config = self._config
-        ffmpeg_out = ffmpeg.convert('-', output_file, config.recorder.codec, config.recorder.bitrate, TMP_FORMAT, append=False)
-        try:
-            await ffmpeg_out.asend(None)
+    
+        with open(output_file, 'wb') as out_f:
 
             async def get_exact_duration(file_path, format: ffmpeg.FfmpegFormat):
                 if format.probe_score >= 100:
@@ -227,11 +224,12 @@ class Recorder:
                 if format.name in APPENDABLE_FORMATS:
                     with open(file_path, 'rb') as f:
                         for chunk in iter_file(f):
-                            await ffmpeg_out.asend(chunk)
+                            out_f.write(chunk)
+                            await asyncio.sleep(0)
                 else:
                     # Convert before appending
-                    async for chunk in ffmpeg.convert(tmp, '-', 'copy', 0, TMP_FORMAT):
-                        await ffmpeg_out.asend(chunk)
+                    async for chunk in ffmpeg.convert(file_path, '-', 'copy', 0, TMP_FORMAT):
+                        out_f.write(chunk)
 
             timecode = 0
             chapters = []
@@ -247,13 +245,8 @@ class Recorder:
                                 with make_temp('chunk') as tmp:
                                     await download_file(http, chunk['file'], tmp)
                                     format = await ffmpeg.get_format(tmp)
-                                    duration_task = asyncio.create_task(get_exact_duration(tmp, format))
-                                    append_task = asyncio.create_task(append_to_output(tmp, format))
-                                    await asyncio.wait([ duration_task, append_task ])
-                                    try:
-                                        duration = await duration_task
-                                    finally: # to ensure task result is always retrieved
-                                        await append_task
+                                    duration = await get_exact_duration(tmp, format)
+                                    await append_to_output(tmp, format)
                                 break
                             except asyncio.CancelledError:
                                 raise
@@ -288,8 +281,6 @@ class Recorder:
                             log.error('The previous chunk also failed so we are giving up all together')
                             raise
                         last_chunk_failed = True
-        finally:
-            await ffmpeg_out.aclose()
 
     async def _record(self, show: Show, output_file: str, start_time: datetime, end_time: datetime):
         """Actually record. Runs as long as the recording does, completes when finished."""
@@ -301,9 +292,13 @@ class Recorder:
             except asyncio.CancelledError:
                 raise
             except:
-                log.info(f'Recording as m3u8 didn\'t work, falling back to plain ffmpeg recording')
-                log.debug(traceback.format_exc())
-                await ffmpeg.convert_file(show.stream, output_file, config.recorder.codec, config.recorder.bitrate, TMP_FORMAT, append=True)
+                if os.stat(output_file).st_size > 0:
+                    log.error('Recording as m3u8 failed (but it did work initially)')
+                    raise
+                else:
+                    log.info(f'Recording as m3u8 didn\'t work, falling back to plain ffmpeg recording')
+                    log.debug(traceback.format_exc())
+                    await ffmpeg.convert_file(show.stream, output_file, config.recorder.codec, config.recorder.bitrate, TMP_FORMAT)
         try:
             if end_time > datetime.now():
                 rec_seconds = (end_time - datetime.now()).total_seconds()
@@ -321,9 +316,16 @@ class Recorder:
             with make_temp('combined.ts') as tmp_file:
                 with open(tmp_file, 'ab') as dest_f:
                     for f_path in rec_files:
-                        with open(f_path, 'rb') as src_f:
-                            for chunk in iter_file(src_f):
-                                dest_f.write(chunk)
+                        # Convert chunk if needed, or just append
+                        chunk_format = await ffmpeg.get_format(f_path)
+                        if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
+                            log.info(f'{f_path} needs format conversion first')
+                            async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
+                                dest_f.write(buff)
+                        else:
+                            with open(f_path, 'rb') as src_f:
+                                for chunk in iter_file(src_f):
+                                    dest_f.write(chunk)
                 # Convert resulting file to its final form
                 final_file = os.path.join(config.recorder.out_dir, get_filename(show.slug, start_time, end_time, config.recorder.extension))
                 log.info(f'Saving final recording to {final_file}')

@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import traceback
+from asyncio.tasks import FIRST_COMPLETED
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from email.utils import formatdate as formatemaildate
@@ -29,7 +30,7 @@ log = logging.getLogger(__name__)
 
 LAUNCH_TIME = datetime.now()
 
-RECORDING_WATCHDOG_TIME = 20
+RECORDING_WATCHDOG_TIME = 30
 FILE_FIRST_APPEARANCE_TIME = 240
 DATE_FORMAT = '%Y%m%d%H%M'
 FILE_NAME = '{name}_{start}_{end}'
@@ -184,32 +185,6 @@ class Recorder:
         self._config_file = config_file
         self._read_config()
 
-    async def _monitor_recordings(self):
-        for _, recording in self._recording_tasks.items():
-            if recording.task.done():
-                continue
-            secs_since_last_update = (datetime.now() - recording.last_output_file_time).total_seconds()
-            if secs_since_last_update >= RECORDING_WATCHDOG_TIME:
-                try:
-                    new_size = os.stat(recording.output_file).st_size
-                    recording_started = new_size > 0
-                except FileNotFoundError:
-                    recording_started = False
-
-                if recording_started:
-                    if new_size == recording.last_output_file_size:
-                        log.warning(f'No change in filesize for {recording.output_file}. Current recording process will be killed')
-                        recording.task.cancel()
-                    else:
-                        recording.last_output_file_size = new_size
-                    recording.last_output_file_time = datetime.now()
-                else:
-                    if secs_since_last_update >= FILE_FIRST_APPEARANCE_TIME:
-                        log.warning(f'File {recording.output_file} still has not appeared after {secs_since_last_update}s. Cancelling recording task.')
-                        recording.task.cancel()
-                    else:
-                        log.warning(f'File {recording.output_file} has not appeared yet')                    
-
     async def _record_m3u8(self, url, output_file):
         APPENDABLE_FORMATS = { 'aac', 'mpegts' }
     
@@ -291,6 +266,7 @@ class Recorder:
         """Actually record. Runs as long as the recording does, completes when finished."""
         log.debug(f'record({show.slug}, {output_file}, {start_time}, {end_time}')
         config = self._config
+
         async def _do_record():
             try:
                 await self._record_m3u8(show.stream, output_file)
@@ -304,14 +280,49 @@ class Recorder:
                     log.info(f'Recording as m3u8 didn\'t work, falling back to plain ffmpeg recording')
                     log.debug(traceback.format_exc())
                     await ffmpeg.convert_file(show.stream, output_file, config.recorder.codec, config.recorder.bitrate, TMP_FORMAT)
+        
+        async def _monitor_recording():
+            prev_size = 0
+            first_apperance_counter = 10
+            while True:
+                await asyncio.sleep(RECORDING_WATCHDOG_TIME)
+                try:
+                    new_size = os.stat(output_file).st_size
+                    recording_started = new_size > 188 # Greater than one mpegts packet
+                except FileNotFoundError:
+                    recording_started = False
+
+                if recording_started:
+                    if new_size == prev_size:
+                        log.warning(f'No change in filesize for {output_file}')
+                        return
+                    else:
+                        prev_size = new_size
+                else:
+                    first_apperance_counter -= 1
+                    if first_apperance_counter < 0:
+                        log.warning(f'File {output_file} still has not appeared.')
+                        return
+                    else:
+                        log.warning(f'File {output_file} has not appeared yet') 
+        
         try:
             if end_time > datetime.now():
                 rec_seconds = (end_time - datetime.now()).total_seconds()
                 log.info(f'Recording {show.name}')
+                rec_task = asyncio.create_task(asyncio.wait_for(_do_record(), timeout=rec_seconds))
+                monitor_task = asyncio.create_task(_monitor_recording())
+                await asyncio.wait([rec_task, monitor_task], return_when=FIRST_COMPLETED)
+                if monitor_task.done():
+                    rec_task.cancel()
+                else:
+                    monitor_task.cancel()
                 try:
-                    await asyncio.wait_for(_do_record(), timeout=rec_seconds)
+                    await rec_task
                 except asyncio.TimeoutError:
                     pass
+                finally:
+                    await monitor_task
             else:
                 log.info(f'{show.name} has already finished')
             log.info(f'Finished recording {show.name}')
@@ -552,9 +563,6 @@ class Recorder:
             def set_wakeup(new_time):
                 nonlocal next_wakeup_time
                 next_wakeup_time = min(next_wakeup_time, new_time)
-
-            # Are existing recordings going ok?
-            schedule(self._monitor_recordings())
             
             # Should anything be recording that isn't?
             set_wakeup(await self._check_and_start_recordings())
@@ -566,13 +574,11 @@ class Recorder:
             set_wakeup(self.get_next_recording_time())
             next_end_task = None
             if self._recording_tasks:
-                set_wakeup(datetime.now() + timedelta(seconds=RECORDING_WATCHDOG_TIME))
                 next_end_task = asyncio.create_task(self._await_next_recording_end())
                 pending.add(next_end_task)
 
             sleep_seconds = max(1, (next_wakeup_time - datetime.now()).total_seconds())
-            if sleep_seconds > RECORDING_WATCHDOG_TIME:
-                log.info(f'Sleeping for {sleep_seconds} seconds...')
+            log.info(f'Sleeping for {sleep_seconds} seconds...')
             sleep_task = asyncio.create_task(asyncio.sleep(sleep_seconds))
             pending.add(sleep_task)
             

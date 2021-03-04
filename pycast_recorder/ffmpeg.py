@@ -43,53 +43,52 @@ async def get_format(filepath):
         log.debug(e)
         return None
 
-# def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple[int, str]]):
-#     def escape(s):
-#         return ''.join((
-#             f'\\{c}' if c in [ '=', ';', '#', '\\', '\n' ] else c
-#             for c in s
-#         ))
-#     text = StringIO()
-#     w = lambda s: text.write(escape(s))
-#     l = lambda s: text.write(escape(s) + '\n')
-#     tag = lambda k, v: text.write(f'{escape(k)}={escape(v)}\n')
+def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple[int, str]]):
+    def escape(s):
+        return ''.join((
+            f'\\{c}' if c in [ '=', ';', '#', '\\', '\n' ] else c
+            for c in str(s)
+        ))
+    text = StringIO()
+    line = lambda s: text.write(escape(s) + '\n')
+    tag = lambda k, v: text.write(f'{escape(k)}={escape(v)}\n')
     
-#     l(';FFMETADATA1')
-#     tag('title', title)
-#     tag('artist', artist)
+    text.write(';FFMETADATA1\n')
+    tag('title', title)
+    tag('artist', artist)
 
-#     def around(iterable):
-#         iterable = iter(iterable)
-#         prev = next(iterable)
-#         curr = next(iterable)
-#         yield None, prev, curr
-#         for item in iter:
-#             yield prev, curr, item
-#         yield curr, item, None
+    def this_and_next(iterable):
+        iterable = iter(iterable)
+        curr = next(iterable)
+        last = curr
+        for item in iterable:
+            yield curr, item
+            last = item
+        yield last, None
 
-#     # Loop runs one behind
-#     chapters.append(0,'')
-#     timecode = -1
-#     name = ''
-#     for prev, this, after in around(chapters):
-        
-#         if timecode >= 0:
-#             l('[CHAPTER]')
-#             tag('TIMEBASE', '1/1000')
-#             tag('START', int(timecode / 1000))
-#             tag('')
-#         timecode = next_timecode
-#         name = next_name
+    for this, after in this_and_next(chapters):
+        start, title = this
+        if after:
+            end, _ = after
+        else:
+            end = duration
 
-        
-    
+        line('[CHAPTER]')
+        tag('TIMEBASE', '1/1000')
+        tag('START', int(start * 1000))
+        tag('END', int(end * 1000))
+        tag('title', title)
 
+    return text.getvalue()
 
-async def convert(source, dest, codec, bitrate, format):
+async def convert(source, dest, codec, bitrate, format, metadata=None):
     proc: asyncio.Process = None
     try:
         log.info(f'convert {source} to {dest} ({codec}, {bitrate})')
-        args = ['ffmpeg', '-i', source, '-acodec', codec ]
+        args = ['ffmpeg', '-i', source ]
+        if metadata:
+            args += [ '-i', metadata, '-map_metadata', '1' ]
+        args += [ '-acodec', codec ]
         if codec != 'copy':
             args += [ '-b:a', bitrate, '-flush_packets', '1' ]
         args += [ '-f', format, '-y', dest ]
@@ -135,9 +134,11 @@ async def convert(source, dest, codec, bitrate, format):
     finally:
         log.info('convert completed')
 
-async def convert_file(source, dest, codec, bitrate, format):
-    async for _ in convert(source, dest, codec, bitrate, format):
+async def convert_file(source, dest, codec, bitrate, format, metadata=None):
+    async for _ in convert(source, dest, codec, bitrate, format, metadata=metadata):
         pass
 
 if __name__ == '__main__':
-    print(asyncio.run(get_format('/tmp/9j1HwAveS3Ap-322571921-4969.aac')))
+    print(format_metadata('hello', 'world', 60, [
+        (0, 'chapter 1'), (10, 'chapter 2'), (30, 'chapter 3')
+    ]))

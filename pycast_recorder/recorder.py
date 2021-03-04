@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import traceback
 from asyncio.tasks import FIRST_COMPLETED
 from contextlib import contextmanager
@@ -187,8 +188,8 @@ class Recorder:
 
     async def _record_m3u8(self, url, output_file):
         APPENDABLE_FORMATS = { 'aac', 'mpegts' }
-    
-        with open(output_file, 'wb') as out_f:
+
+        with open(output_file, 'wb') as out_f, open(output_file + '.chapters', 'w') as chapter_f:
 
             async def get_exact_duration(file_path, format: ffmpeg.FfmpegFormat):
                 if format.probe_score >= 100:
@@ -212,7 +213,6 @@ class Recorder:
                         out_f.write(chunk)
 
             timecode = 0
-            chapters = []
             prev_chapter = None
             m3u8 = M3u8(url)
             timeout = aiohttp.ClientTimeout(connect=10, sock_read=10)
@@ -247,8 +247,8 @@ class Recorder:
                             chapter_name = prev_chapter
 
                         if prev_chapter != chapter_name:
-                            chapter = (timecode, chapter_name)
-                            chapters.append(chapter)
+                            chapter = (str(timecode), chapter_name)
+                            chapter_f.write(shlex.join(chapter) + '\n')
                             log.info(chapter)
                         prev_chapter = chapter_name
                         timecode += duration
@@ -273,8 +273,9 @@ class Recorder:
             except asyncio.CancelledError:
                 raise
             except:
-                if os.stat(output_file).st_size > 0:
+                if os.path.isfile(output_file) and os.stat(output_file).st_size > 0:
                     log.error('Recording as m3u8 failed (but it did work initially)')
+                    log.debug(traceback.format_exc())
                     raise
                 else:
                     log.info(f'Recording as m3u8 didn\'t work, falling back to plain ffmpeg recording')
@@ -314,6 +315,7 @@ class Recorder:
                 monitor_task = asyncio.create_task(_monitor_recording())
                 await asyncio.wait([rec_task, monitor_task], return_when=FIRST_COMPLETED)
                 if monitor_task.done():
+                    log.error('Cancelling recording due to monitor failure')
                     rec_task.cancel()
                 else:
                     monitor_task.cancel()
@@ -322,38 +324,67 @@ class Recorder:
                 except asyncio.TimeoutError:
                     pass
                 finally:
-                    await monitor_task
+                    try:
+                        await monitor_task
+                    except asyncio.CancelledError:
+                        pass
             else:
                 log.info(f'{show.name} has already finished')
-            log.info(f'Finished recording {show.name}')
+            log.info(f'Finished recording {show.name}, starting finalisation')
             # Locate and combine all recording files
             base_name = os.path.join(config.recorder.temp_dir, get_filename(show.slug, start_time, end_time))
             rec_files = sorted(glob(base_name + '*'))
+            time_offset = 0
+            duration = 0
             with make_temp('combined.ts') as tmp_file:
+                chapters = []
                 with open(tmp_file, 'ab') as dest_f:
                     for f_path in rec_files:
-                        # Convert chunk if needed, or just append
-                        try:
-                            chunk_format = await ffmpeg.get_format(f_path)
-                            if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
-                                log.info(f'{f_path} needs format conversion first')
-                                async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
-                                    dest_f.write(buff)
-                            else:
-                                with open(f_path, 'rb') as src_f:
-                                    for chunk in iter_file(src_f):
-                                        dest_f.write(chunk)
-                        except:
-                            log.error(f'Exception occured finalising recording chunk {f_path}. This chunk will be skipped.')
-                            log.error(traceback.format_exc())
+                        if f_path.endswith(TMP_EXT):
+                            # Convert chunk if needed, or just append
+                            try:
+                                chunk_format = await ffmpeg.get_format(f_path)
+                                if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
+                                    log.info(f'{f_path} needs format conversion first')
+                                    async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
+                                        dest_f.write(buff)
+                                else:
+                                    with open(f_path, 'rb') as src_f:
+                                        for chunk in iter_file(src_f):
+                                            dest_f.write(chunk)
+                                duration = chunk_format.duration
+                            except:
+                                log.error(f'Exception occured finalising recording chunk {f_path}. This chunk will be skipped.')
+                                log.error(traceback.format_exc())
+                        elif f_path.endswith('.chapters'):
+                            log.debug('Chapter file: ' + f_path)
+                            with open(f_path, 'r') as f:
+                                for line in f:
+                                    timecode_str, name = shlex.split(line)
+                                    chapters.append((int(float(timecode_str)) + time_offset, name))
+                            log.info(chapters)
+                            time_offset += duration
+
                 # Convert resulting file to its final form
                 final_file = os.path.join(config.recorder.out_dir, get_filename(show.slug, start_time, end_time, config.recorder.extension))
                 log.info(f'Saving final recording to {final_file}')
-                await ffmpeg.convert_file(tmp_file, final_file, 'copy', 0, config.recorder.format)
+                with make_temp('ffdata') as ff_data:
+                    metadata_file = None
+                    if chapters:
+                        with open(ff_data, 'w') as f:
+                            title = datetime.strftime(start_time, "%Y-%m-%d")
+                            f.write(ffmpeg.format_metadata(title, show.name, time_offset, chapters))
+                        metadata_file = ff_data
+                    await ffmpeg.convert_file(tmp_file, final_file, 'copy', 0, config.recorder.format, metadata=metadata_file)
             for f_path in rec_files:
                 os.remove(f_path)
+            log.info('Recording done')
         except asyncio.CancelledError:
             pass
+        except:
+            log.error('Recording failed')
+            log.error(traceback.format_exc())
+            raise
 
     async def _start_recording(self, show, start_time: datetime, end_time: datetime) -> Recording:
         log.debug(f'start_recording({show})')

@@ -81,11 +81,14 @@ def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple
 
     return text.getvalue()
 
-async def convert(source, dest, codec, bitrate, format, metadata=None):
+async def convert(source, dest, codec, bitrate, format, metadata=None, in_format=None):
     proc: asyncio.Process = None
     try:
         log.info(f'convert {source} to {dest} ({codec}, {bitrate})')
-        args = ['ffmpeg', '-i', source ]
+        args = ['ffmpeg']
+        if in_format:
+            args += [ '-f', in_format ]
+        args += [ '-i', source ]
         if metadata:
             args += [ '-i', metadata, '-map_metadata', '1' ]
         args += [ '-acodec', codec ]
@@ -134,8 +137,8 @@ async def convert(source, dest, codec, bitrate, format, metadata=None):
     finally:
         log.info('convert completed')
 
-async def convert_file(source, dest, codec, bitrate, format, metadata=None):
-    async for _ in convert(source, dest, codec, bitrate, format, metadata=metadata):
+async def convert_file(source, dest, codec, bitrate, format, metadata=None, in_format=None):
+    async for _ in convert(source, dest, codec, bitrate, format, metadata=metadata, in_format=None):
         pass
 
 if __name__ == '__main__':

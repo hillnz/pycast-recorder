@@ -342,20 +342,22 @@ class Recorder:
                     for f_path in rec_files:
                         if f_path.endswith(TMP_EXT):
                             # Convert chunk if needed, or just append
-                            try:
-                                chunk_format = await ffmpeg.get_format(f_path)
-                                if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
-                                    log.info(f'{f_path} needs format conversion first')
-                                    async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT):
-                                        dest_f.write(buff)
-                                else:
-                                    with open(f_path, 'rb') as src_f:
-                                        for chunk in iter_file(src_f):
-                                            dest_f.write(chunk)
-                                duration = chunk_format.duration
-                            except:
-                                log.error(f'Exception occured finalising recording chunk {f_path}. This chunk will be skipped.')
-                                log.error(traceback.format_exc())
+                            for in_format in [ None, 'aac' ]: # Hack: try as aac if failed
+                                try:
+                                    chunk_format = await ffmpeg.get_format(f_path)
+                                    if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
+                                        log.info(f'{f_path} needs format conversion first')
+                                        async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT, in_format=in_format):
+                                            dest_f.write(buff)
+                                    else:
+                                        with open(f_path, 'rb') as src_f:
+                                            for chunk in iter_file(src_f):
+                                                dest_f.write(chunk)
+                                    duration = chunk_format.duration
+                                    break
+                                except:
+                                    log.error(f'Exception occured finalising recording chunk {f_path}. This chunk will be skipped.')
+                                    log.error(traceback.format_exc())
                         elif f_path.endswith('.chapters'):
                             log.debug('Chapter file: ' + f_path)
                             with open(f_path, 'r') as f:

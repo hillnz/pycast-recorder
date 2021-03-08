@@ -345,7 +345,7 @@ class Recorder:
                             for in_format in [ None, 'aac' ]: # Hack: try as aac if failed
                                 try:
                                     chunk_format = await ffmpeg.get_format(f_path)
-                                    if chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
+                                    if not chunk_format or chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
                                         log.info(f'{f_path} needs format conversion first')
                                         async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT, in_format=in_format):
                                             dest_f.write(buff)

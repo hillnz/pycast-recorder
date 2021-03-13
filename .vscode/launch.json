@@ -32,7 +32,8 @@
             "console": "integratedTerminal",
             "env": {
                 "DEBUG": "__main__",
-                "PYCAST_TEST_MODE": "true"
+                "PYCAST_TEST_MODE": "true",
+                "LOGLEVEL": "DEBUG"
             }
         },
         {

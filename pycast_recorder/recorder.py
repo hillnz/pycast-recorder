@@ -346,13 +346,19 @@ class Recorder:
                                 try:
                                     chunk_format = await ffmpeg.get_format(f_path)
                                     if not chunk_format or chunk_format.name != TMP_FORMAT or chunk_format.codec != config.recorder.codec:
-                                        log.info(f'{f_path} needs format conversion first')
-                                        async for buff in ffmpeg.convert(f_path, '-', config.recorder.codec, config.recorder.bitrate, TMP_FORMAT, in_format=in_format):
-                                            dest_f.write(buff)
+                                        codec = config.recorder.codec
                                     else:
-                                        with open(f_path, 'rb') as src_f:
-                                            for chunk in iter_file(src_f):
-                                                dest_f.write(chunk)
+                                        codec = 'copy'
+                                    tmp_converted = f_path + '.tmp'
+                                    try:
+                                        await ffmpeg.convert_file(f_path, tmp_converted, codec, config.recorder.bitrate, 'matroska', in_format=in_format)
+                                        chunk_format = await ffmpeg.get_format(tmp_converted)
+                                        os.rename(tmp_converted, f_path)
+                                    finally:
+                                        if os.path.isfile(tmp_converted):
+                                            os.remove(tmp_converted)
+                                    async for chunk in ffmpeg.convert(f_path, '-', 'copy', '', TMP_FORMAT):
+                                        dest_f.write(chunk)
                                     duration = chunk_format.duration
                                     break
                                 except:
@@ -363,7 +369,7 @@ class Recorder:
                             with open(f_path, 'r') as f:
                                 for line in f:
                                     timecode_str, name = shlex.split(line)
-                                    chapters.append((int(float(timecode_str)) + time_offset, name))
+                                    chapters.append((float(timecode_str) + time_offset, name))
                             log.info(chapters)
                             time_offset += duration
 

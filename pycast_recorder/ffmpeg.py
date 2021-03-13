@@ -60,11 +60,10 @@ def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple
     def this_and_next(iterable):
         iterable = iter(iterable)
         curr = next(iterable)
-        last = curr
         for item in iterable:
             yield curr, item
-            last = item
-        yield last, None
+            curr = item
+        yield curr, None
 
     for this, after in this_and_next(chapters):
         start, title = this

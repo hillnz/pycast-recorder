@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import shlex
-from asyncio.subprocess import DEVNULL, PIPE, Process
+from asyncio.subprocess import PIPE, Process
 from dataclasses import dataclass
 from io import StringIO
 from subprocess import CalledProcessError
@@ -65,8 +65,13 @@ def format_metadata(title: str, artist: str, duration: int, chapters: List[Tuple
             curr = item
         yield curr, None
 
+    chapter_titles = []
     for this, after in this_and_next(chapters):
         start, title = this
+        chapter_titles.append(title)
+        repeats = len([ t for t in chapter_titles if t == title ])
+        if repeats > 1:
+            title += f' ({repeats})'
         if after:
             end, _ = after
         else:
@@ -137,7 +142,7 @@ async def convert(source, dest, codec, bitrate, format, metadata=None, in_format
         log.info('convert completed')
 
 async def convert_file(source, dest, codec, bitrate, format, metadata=None, in_format=None):
-    async for _ in convert(source, dest, codec, bitrate, format, metadata=metadata, in_format=None):
+    async for _ in convert(source, dest, codec, bitrate, format, metadata=metadata, in_format=in_format):
         pass
 
 if __name__ == '__main__':

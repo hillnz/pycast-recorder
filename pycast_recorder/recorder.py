@@ -244,6 +244,7 @@ class Recorder:
                         elif artist or title:
                             chapter_name = artist or title
                         else:
+                            log.warning(f'Chapter name not discernable for chunk {chunk}')
                             chapter_name = prev_chapter
 
                         if prev_chapter != chapter_name:

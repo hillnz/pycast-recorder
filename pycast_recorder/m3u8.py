@@ -87,7 +87,7 @@ class M3u8:
                     return (await response.content.readline()).decode().strip()
 
                 header = await read(len(MAGIC))
-                if header != '#EXTM3U':
+                if header != MAGIC:
                     raise Exception('Not an m3u8 stream')
 
                 await readline() # To consume rest of header line

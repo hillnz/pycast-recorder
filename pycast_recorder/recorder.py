@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 
 LAUNCH_TIME = datetime.now()
 
-RECORDING_WATCHDOG_TIME = 30
+# TODO adjust based on max block time
+RECORDING_WATCHDOG_TIME = 300
 FILE_FIRST_APPEARANCE_TIME = 240
 DATE_FORMAT = '%Y%m%d%H%M'
 FILE_NAME = '{name}_{start}_{end}'
@@ -83,6 +84,10 @@ class File:
                         'size': self.size,
                         'mtime': stats.st_mtime
                     }, f)
+
+# TODO
+class ShowBlock(BaseModel):
+    pass
 
 class ShowSchedule(BaseModel):
     every: List[int]
@@ -175,7 +180,42 @@ def iter_file(f, chunk_size=64 * 1024):
         chunk = f.read(chunk_size)
         if not chunk:
             break
-        yield chunk            
+        yield chunk
+
+class Blocker:
+    
+    def __init__(self, config=None):
+        # TODO
+        self._config = config
+        # TODO base on the config
+        self._state = {
+            'ads': 0
+        }
+
+    def get_buffer_size():
+        """Max amount of time that it might be necessary to backtrack"""
+        # TODO
+        return 0
+
+    def should_block(self, artist, title: str, duration):
+        if title.lower() == 'adswizz spot block start':
+            log.debug('Blocking ads')
+            self._state['ads'] += duration
+            return True
+        if title.lower() == 'adswizz spot block end':
+            log.debug('Finish blocking ads')
+            self._state['ads'] = 0
+            return False
+        if self._state['ads'] > 0:
+            self._state['ads'] += duration
+            if self._state['ads'] > 300:
+                log.warning('Ads have gone on longer than expected, cancelling')
+                self._state['ads'] = 0
+                return False
+            return True
+
+        return False
+
 
 class Recorder:
 
@@ -188,6 +228,7 @@ class Recorder:
 
     async def _record_m3u8(self, url, output_file):
         APPENDABLE_FORMATS = { 'aac', 'mpegts' }
+        blocker = Blocker()
 
         with open(output_file, 'wb') as out_f, open(output_file + '.chapters', 'w') as chapter_f:
 
@@ -220,12 +261,32 @@ class Recorder:
                 last_chunk_failed = False
                 async for chunk in m3u8.read_song_info():
                     try:
+                        artist = chunk.get('artist', '').title()
+                        title = chunk.get('title', '').title()
+                        if artist and title:
+                            chapter_name = f'{artist} - {title}'
+                        elif artist or title:
+                            chapter_name = artist or title
+                        else:
+                            log.warning(f'Chapter name not discernable for chunk {chunk}')
+                            chapter_name = prev_chapter
+
+                        chapter = None
+                        if prev_chapter != chapter_name:
+                            chapter = (str(timecode), chapter_name)
+                            log.info(chapter)
+                        prev_chapter = chapter_name
+                                                
+                        blocked = False
                         for n in range(2):
                             try:
                                 with make_temp('chunk') as tmp:
                                     await download_file(http, chunk['file'], tmp)
                                     format = await ffmpeg.get_format(tmp)
                                     duration = await get_exact_duration(tmp, format)
+                                    if blocker.should_block(artist, title, duration):
+                                        blocked = True
+                                        break
                                     await append_to_output(tmp, format)
                                 break
                             except asyncio.CancelledError:
@@ -237,22 +298,12 @@ class Recorder:
                                     await asyncio.sleep(1)
                                 else: # if second attempt also failed
                                     raise
-                        artist = chunk.get('artist', '').title()
-                        title = chunk.get('title', '').title()
-                        if artist and title:
-                            chapter_name = f'{artist} - {title}'
-                        elif artist or title:
-                            chapter_name = artist or title
-                        else:
-                            log.warning(f'Chapter name not discernable for chunk {chunk}')
-                            chapter_name = prev_chapter
 
-                        if prev_chapter != chapter_name:
-                            chapter = (str(timecode), chapter_name)
-                            chapter_f.write(shlex.join(chapter) + '\n')
-                            log.info(chapter)
-                        prev_chapter = chapter_name
-                        timecode += duration
+                        if not blocked:
+                            timecode += duration
+                            if chapter:
+                                chapter_f.write(shlex.join(chapter) + '\n')
+
                         last_chunk_failed = False
                     except asyncio.CancelledError:
                         raise

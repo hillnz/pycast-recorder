@@ -13,7 +13,7 @@ pydantic = "^1.7.3"
 
 [tool.poetry.dev-dependencies]
 pylint = "^2.3"
-rope = "^0.18.0"
+rope = "^0.19.0"
 autopep8 = "^1.5.4"
 isort = "^5.7.0"
 pytest = "^6.2.2"

@@ -299,14 +299,14 @@ testing = ["argcomplete", "hypothesis (>=3.56)", "mock", "nose", "requests", "xm
 
 [[package]]
 name = "rope"
-version = "0.19.0"
+version = "0.20.0"
 description = "a python refactoring library..."
 category = "dev"
 optional = false
 python-versions = "*"
 
 [package.extras]
-dev = ["pytest"]
+dev = ["pytest", "pytest-timeout"]
 
 [[package]]
 name = "ruamel.yaml"
@@ -407,7 +407,7 @@ testing = ["pytest (>=3.5,!=3.7.3)", "pytest-checkdocs (>=1.2.3)", "pytest-flake
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.7"
-content-hash = "c31bcf1f438cb2302e5a691ba5ec21e0f46cddbd17d380d825c2760a62facaac"
+content-hash = "560d278cf130a38c4c60740b6e2671bf65b670159b3d1ab024c8a8273e32f0a6"
 
 [metadata.files]
 aiohttp = [
@@ -711,7 +711,7 @@ pytest = [
     {file = "pytest-6.2.2.tar.gz", hash = "sha256:9d1edf9e7d0b84d72ea3dbcdfd22b35fb543a5e8f2a60092dd578936bf63d7f9"},
 ]
 rope = [
-    {file = "rope-0.19.0.tar.gz", hash = "sha256:64e6d747532e1f5c8009ec5aae3e5523a5bcedf516f39a750d57d8ed749d90da"},
+    {file = "rope-0.20.0.tar.gz", hash = "sha256:82cf7d2ffa5ccaee5a1ceeafcc31973e133df1237401aa226d61385e3f89b511"},
 ]
 "ruamel.yaml" = [
     {file = "ruamel.yaml-0.17.0-py2.py3-none-any.whl", hash = "sha256:3a41b30235cc6ff7baee0321ffa99e7f94bbc7c7e0f2cac1d75b6b24fc24f202"},

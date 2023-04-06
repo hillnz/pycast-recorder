@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=python
-ARG PYTHON_VERSION=3.11.2
+ARG PYTHON_VERSION=3.11.3
 FROM --platform=$BUILDPLATFORM python:${PYTHON_VERSION} AS builder
 
 # renovate: datasource=pypi depName=poetry

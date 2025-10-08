@@ -16,7 +16,7 @@ pylint = "^2.3"
 rope = "^1.0.0"
 autopep8 = "^2.0.0"
 isort = "^5.7.0"
-pytest = "^7.0.0"
+pytest = "^8.0.0"
 anyio = "^3.0.0"
 debugpy = "^1.2.1"
 

@@ -1083,18 +1083,18 @@ release = ["pip-tools (>=6.12.1)", "toml (>=0.10.2)", "twine (>=4.0.2)"]
 
 [[package]]
 name = "ruamel-yaml"
-version = "0.17.40"
+version = "0.18.13"
 description = "ruamel.yaml is a YAML parser/emitter that supports roundtrip preservation of comments, seq/map flow style, and map key order"
 category = "main"
 optional = false
-python-versions = ">=3"
+python-versions = ">=3.7"
 files = [
-    {file = "ruamel.yaml-0.17.40-py3-none-any.whl", hash = "sha256:b16b6c3816dff0a93dca12acf5e70afd089fa5acb80604afd1ffa8b465b7722c"},
-    {file = "ruamel.yaml-0.17.40.tar.gz", hash = "sha256:6024b986f06765d482b5b07e086cc4b4cd05dd22ddcbc758fa23d54873cf313d"},
+    {file = "ruamel.yaml-0.18.13-py3-none-any.whl", hash = "sha256:cf9628cfdfe9d88b78429cd093aa766e9a4c69242f9f3c86ac1d9e56437e5572"},
+    {file = "ruamel.yaml-0.18.13.tar.gz", hash = "sha256:b0d5ac0a2b0b4e39d87aed00ddff26e795de6750b064da364a8d009b97ce5f26"},
 ]
 
 [package.dependencies]
-"ruamel.yaml.clib" = {version = ">=0.2.7", markers = "platform_python_implementation == \"CPython\" and python_version < \"3.13\""}
+"ruamel.yaml.clib" = {version = ">=0.2.7", markers = "platform_python_implementation == \"CPython\" and python_version < \"3.14\""}
 
 [package.extras]
 docs = ["mercurial (>5.7)", "ryd"]
@@ -1335,4 +1335,4 @@ testing = ["func-timeout", "jaraco.itertools", "jaraco.test (>=3.2.0)", "pytest 
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.7"
-content-hash = "967bedd1eeae423e3acdbf425b178901a942d44c4d176975cc9f8d64e3bce70b"
+content-hash = "adbe19b4b8a83c56271a22797647e228ceed5b25e8d954d4a6e952a46a7d86c4"

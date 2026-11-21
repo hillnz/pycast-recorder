@@ -3,7 +3,7 @@ ARG PYTHON_VERSION=3.15.2
 FROM --platform=$BUILDPLATFORM python:${PYTHON_VERSION} AS builder
 
 # renovate: datasource=pypi depName=poetry
-ARG POETRY_VERSION=2.5.1
+ARG POETRY_VERSION=2.5.2
 RUN pip install poetry==${POETRY_VERSION} --prefer-binary
 
 WORKDIR /usr/src/pycast_recorder
